@@ -36,18 +36,6 @@ const {
   GetCallerIdentityCommand
 } = require('@aws-sdk/client-sts');
 
-
-/*
- * ============================================================
- * AWS ORGANIZATIONS
- * ============================================================
- */
-
-const {
-  OrganizationsClient,
-  ListAccountsCommand
-} = require('@aws-sdk/client-organizations');
-
 const {
   ElasticLoadBalancingV2Client,
   DescribeLoadBalancersCommand
@@ -173,24 +161,6 @@ function getClients(region) {
 
   return clientCache[region];
 }
-
-
-
-/*
- * ============================================================
- * AWS ORGANIZATIONS CLIENT
- * ============================================================
- *
- * Organization-level service.
- * This is intentionally NOT part of getClients(region)
- * because Organizations is not region-specific.
- */
-
-const organizations =
-  new OrganizationsClient({
-    region:
-      'us-east-1'
-  });
 
 
 /*

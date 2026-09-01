@@ -36,18 +36,6 @@ const {
   GetCallerIdentityCommand
 } = require('@aws-sdk/client-sts');
 
-
-/*
- * ============================================================
- * AWS ORGANIZATIONS
- * ============================================================
- */
-
-const {
-  OrganizationsClient,
-  ListAccountsCommand
-} = require('@aws-sdk/client-organizations');
-
 const {
   ElasticLoadBalancingV2Client,
   DescribeLoadBalancersCommand
@@ -173,24 +161,6 @@ function getClients(region) {
 
   return clientCache[region];
 }
-
-
-
-/*
- * ============================================================
- * AWS ORGANIZATIONS CLIENT
- * ============================================================
- *
- * Organization-level service.
- * This is intentionally NOT part of getClients(region)
- * because Organizations is not region-specific.
- */
-
-const organizations =
-  new OrganizationsClient({
-    region:
-      'us-east-1'
-  });
 
 
 /*
@@ -914,7 +884,28 @@ const toList =
       );
 
 
+const toList =
+  map =>
+    Object.entries(map)
 
+      .map(
+        ([name, cost]) => ({
+
+          name,
+
+          cost:
+            Number(
+              cost.toFixed(2)
+            )
+
+        })
+      )
+
+      .sort(
+        (a, b) =>
+          b.cost -
+          a.cost
+      );
 
 
 /*
@@ -922,216 +913,6 @@ const toList =
  * EC2
  * ============================================================
  */
-
-
-/*
- * ============================================================
- * SAVINGS PLAN RECOMMENDATION
- * ============================================================
- *
- * Returns Cost Explorer Savings Plan recommendations when
- * available. If the account/API does not return a recommendation,
- * return a safe empty result instead of breaking the billing API.
- */
-async function getSavingsPlanRecommendation(ce) {
-
-  try {
-
-    /*
-     * Cost Explorer Savings Plans recommendations are optional.
-     * Some accounts/regions may not have recommendations available.
-     */
-    const response =
-      await ce.send(
-        new GetSavingsPlansPurchaseRecommendationCommand({
-          SavingsPlansType:
-            'COMPUTE_SP',
-          TermInYears:
-            'ONE_YEAR',
-          PaymentOption:
-            'NO_UPFRONT'
-        })
-      );
-
-
-    const details =
-      response.SavingsPlansPurchaseRecommendation || {};
-
-
-    const recommendations =
-      details.SavingsPlansPurchaseRecommendationDetail || [];
-
-
-    const estimatedMonthlySavings =
-      recommendations.reduce(
-        (
-          sum,
-          item
-        ) =>
-          sum +
-          parseFloat(
-            item.EstimatedMonthlySavingsAmount || '0'
-          ),
-        0
-      );
-
-
-    return {
-
-      available:
-        recommendations.length > 0,
-
-      count:
-        recommendations.length,
-
-      estimatedMonthlySavings:
-        Number(
-          estimatedMonthlySavings.toFixed(2)
-        ),
-
-      recommendedCommitment:
-        recommendations[0] || null,
-
-      recommendations
-
-    };
-
-  } catch (error) {
-
-    console.warn(
-      'Savings Plans recommendation unavailable:',
-      error.message
-    );
-
-    return {
-
-      available:
-        false,
-
-      count:
-        0,
-
-      estimatedMonthlySavings:
-        0,
-
-      recommendedCommitment:
-        null,
-
-      recommendations:
-        []
-
-    };
-
-  }
-
-}
-
-
-
-/*
- * ============================================================
- * RESERVED INSTANCE RECOMMENDATION
- * ============================================================
- */
-
-async function getReservedInstanceRecommendation(ce) {
-
-  try {
-
-    const response =
-      await ce.send(
-        new GetReservationPurchaseRecommendationCommand({
-
-          Service:
-            'Amazon Elastic Compute Cloud - Compute',
-
-          LookbackPeriodInDays:
-            'THIRTY_DAYS',
-
-          PaymentOption:
-            'NO_UPFRONT',
-
-          TermInYears:
-            'ONE_YEAR'
-
-        })
-      );
-
-
-    const recommendations =
-      response.RecommendationsByAction ||
-      [];
-
-
-    const details =
-      recommendations.flatMap(
-        item =>
-          item.RecommendationDetails ||
-          []
-      );
-
-
-    const estimatedMonthlySavings =
-      details.reduce(
-        (
-          sum,
-          item
-        ) =>
-          sum +
-          parseFloat(
-            item.EstimatedMonthlySavingsAmount ||
-            '0'
-          ),
-        0
-      );
-
-
-    return {
-
-      available:
-        details.length > 0,
-
-      count:
-        details.length,
-
-      estimatedMonthlySavings:
-        Number(
-          estimatedMonthlySavings.toFixed(2)
-        ),
-
-      recommendations:
-        details
-
-    };
-
-  } catch (error) {
-
-    console.warn(
-      'Reserved Instance recommendation unavailable:',
-      error.message
-    );
-
-
-    return {
-
-      available:
-        false,
-
-      count:
-        0,
-
-      estimatedMonthlySavings:
-        0,
-
-      recommendations:
-        []
-
-    };
-
-  }
-
-}
-
 
 async function fetchEC2Stats(
   ec2
@@ -4240,12 +4021,6 @@ async function fetchAllData(
 
     monthlyData,
 
-    selectedGlobalMap,
-
-    previousGlobalMap,
-
-    previous2GlobalMap,
-
     ec2Stats,
 
     elasticIPs,
@@ -4292,46 +4067,24 @@ async function fetchAllData(
       ceCostByService(
         ce,
         selected.start,
-        selected.end,
-        region
-      ),
-
-      ceCostByService(
-        ce,
-        previous.start,
-        previous.end,
-        region
-      ),
-
-      ceCostByService(
-        ce,
-        previous2.start,
-        previous2.end,
-        region
-      ),
-
-      ceMonthlyTotals(
-        ce,
-        billingYear,
-        region
-      ),
-
-      ceGlobalCostByService(
-        ce,
-        selected.start,
         selected.end
       ),
 
-      ceGlobalCostByService(
+      ceCostByService(
         ce,
         previous.start,
         previous.end
       ),
 
-      ceGlobalCostByService(
+      ceCostByService(
         ce,
         previous2.start,
         previous2.end
+      ),
+
+      ceMonthlyTotals(
+        ce,
+        billingYear
       ),
 
       fetchEC2Stats(
@@ -4395,12 +4148,6 @@ async function fetchAllData(
     ]);
 
 
-  /*
-   * ============================================================
-   * REGIONAL + GLOBAL COST BREAKDOWN
-   * ============================================================
-   */
-
   const services =
     toList(
       selectedMap
@@ -4419,36 +4166,7 @@ async function fetchAllData(
     );
 
 
-  /*
-   * Global/common AWS services.
-   *
-   * These are fetched without a REGION filter and are therefore
-   * common to the selected region.
-   */
-
-  const globalServices =
-    toList(
-      selectedGlobalMap
-    );
-
-
-  const lastMonthGlobalServices =
-    toList(
-      previousGlobalMap
-    );
-
-
-  const twoMonthsAgoGlobalServices =
-    toList(
-      previous2GlobalMap
-    );
-
-
-  /*
-   * Regional cost.
-   */
-
-  const regionalCost =
+  const currentMonthTotal =
     Number(
       services
         .reduce(
@@ -4463,61 +4181,6 @@ async function fetchAllData(
         )
         .toFixed(2)
     );
-
-
-  /*
-   * Global/common cost.
-   */
-
-  const globalCost =
-    Number(
-      globalServices
-        .reduce(
-          (
-            sum,
-            item
-          ) =>
-            sum +
-            item.cost,
-
-          0
-        )
-        .toFixed(2)
-    );
-
-
-  /*
-   * Total = selected region + global/common services.
-   */
-
-  const currentMonthTotal =
-    Number(
-      (
-        regionalCost +
-        globalCost
-      ).toFixed(2)
-    );
-
-
-  /*
-   * Combined services.
-   *
-   * Existing frontend continues to receive `services`,
-   * while the new regional/global fields allow the UI to
-   * display the split.
-   */
-
-  const combinedServices = [
-    ...services,
-    ...globalServices
-  ].sort(
-    (
-      a,
-      b
-    ) =>
-      b.cost -
-      a.cost
-  );
 
 
   /*
@@ -4689,60 +4352,6 @@ async function fetchAllData(
       selected.isCurrentMonth,
 
     currentMonthTotal,
-
-
-    /*
-     * ============================================================
-     * REGIONAL + GLOBAL BILLING SUMMARY
-     * ============================================================
-     */
-
-    billingSummary: {
-
-      selectedRegion:
-        region,
-
-      regionalCost,
-
-      globalCost,
-
-      totalCost:
-        currentMonthTotal
-
-    },
-
-
-    /*
-     * Current month service split
-     */
-
-    regionalServices:
-      services,
-
-    globalServices:
-      globalServices,
-
-
-    /*
-     * Previous month service split
-     */
-
-    lastMonthRegionalServices:
-      lastMonthServices,
-
-    lastMonthGlobalServices:
-      lastMonthGlobalServices,
-
-
-    /*
-     * Two months ago service split
-     */
-
-    twoMonthsAgoRegionalServices:
-      twoMonthsAgoServices,
-
-    twoMonthsAgoGlobalServices:
-      twoMonthsAgoGlobalServices,
 
 
     dateRange: {

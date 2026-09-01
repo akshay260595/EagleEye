@@ -36,18 +36,6 @@ const {
   GetCallerIdentityCommand
 } = require('@aws-sdk/client-sts');
 
-
-/*
- * ============================================================
- * AWS ORGANIZATIONS
- * ============================================================
- */
-
-const {
-  OrganizationsClient,
-  ListAccountsCommand
-} = require('@aws-sdk/client-organizations');
-
 const {
   ElasticLoadBalancingV2Client,
   DescribeLoadBalancersCommand
@@ -173,24 +161,6 @@ function getClients(region) {
 
   return clientCache[region];
 }
-
-
-
-/*
- * ============================================================
- * AWS ORGANIZATIONS CLIENT
- * ============================================================
- *
- * Organization-level service.
- * This is intentionally NOT part of getClients(region)
- * because Organizations is not region-specific.
- */
-
-const organizations =
-  new OrganizationsClient({
-    region:
-      'us-east-1'
-  });
 
 
 /*
@@ -343,205 +313,7 @@ function yearRange(year) {
  * ============================================================
  */
 
-/*
- * ============================================================
- * COST EXPLORER - REGIONAL + GLOBAL COST
- * ============================================================
- *
- * Regional services:
- *   Costs filtered by the selected AWS region.
- *
- * Global services:
- *   Common AWS services whose charges are not tied to the
- *   selected regional infrastructure.
- *
- * The API returns both separately so the UI can display:
- *
- *   Selected Region Cost
- *   + Global Cost
- *   = Total Displayed Cost
- */
-
-const GLOBAL_SERVICE_NAMES = new Set([
-  'Amazon Route 53',
-  'Amazon CloudFront',
-  'AWS Identity and Access Management',
-  'AWS Support',
-  'AWS Shield',
-  'AWS WAF',
-  'AWS Organizations',
-  'AWS Billing',
-  'AWS Cost Explorer',
-  'AWS Budgets',
-  'AWS Service Catalog',
-  'AWS Artifact',
-  'Amazon Registrar',
-  'AWS Marketplace'
-]);
-
-
-function isGlobalService(serviceName) {
-
-  if (!serviceName) {
-    return false;
-  }
-
-  return GLOBAL_SERVICE_NAMES.has(
-    serviceName
-  );
-}
-
-
-/*
- * Get Cost Explorer service costs.
- *
- * region = selected AWS region.
- *
- * When includeGlobal = false:
- *   return selected-region costs.
- *
- * When includeGlobal = true:
- *   return global-service costs.
- *
- * The selected-region query deliberately excludes the
- * known global services so they are not counted twice.
- */
 async function ceCostByService(
-  ce,
-  start,
-  end,
-  region
-) {
-
-  try {
-
-    const response =
-      await ce.send(
-        new GetCostAndUsageCommand({
-
-          TimePeriod: {
-            Start: start,
-            End: end
-          },
-
-          Granularity:
-            'MONTHLY',
-
-          Metrics: [
-            'UnblendedCost'
-          ],
-
-          GroupBy: [
-            {
-              Type:
-                'DIMENSION',
-
-              Key:
-                'SERVICE'
-            }
-          ],
-
-          Filter: {
-
-            Dimensions: {
-
-              Key:
-                'REGION',
-
-              Values: [
-                region
-              ]
-
-            }
-
-          }
-
-        })
-      );
-
-
-    return (
-      response.ResultsByTime || []
-    )
-      .flatMap(
-        result =>
-          result.Groups || []
-      )
-      .reduce(
-        (
-          acc,
-          group
-        ) => {
-
-          const cost =
-            parseFloat(
-              group.Metrics
-                ?.UnblendedCost
-                ?.Amount ||
-                '0'
-            );
-
-
-          if (
-            cost <= 0.005
-          ) {
-            return acc;
-          }
-
-
-          const service =
-            group.Keys?.[0] ||
-            'Unknown';
-
-
-          /*
-           * Global services are handled separately.
-           */
-          if (
-            isGlobalService(
-              service
-            )
-          ) {
-            return acc;
-          }
-
-
-          acc[service] =
-            (
-              acc[service] ||
-              0
-            ) + cost;
-
-
-          return acc;
-
-        },
-        {}
-      );
-
-  } catch (error) {
-
-    console.warn(
-      'CE regional services:',
-      error.message
-    );
-
-    return {};
-
-  }
-
-}
-
-
-/*
- * Get global service costs.
- *
- * We query Cost Explorer by SERVICE and then retain only
- * the services classified as global by GLOBAL_SERVICE_NAMES.
- *
- * No REGION filter is applied here.
- */
-async function ceGlobalCostByService(
   ce,
   start,
   end
@@ -583,8 +355,8 @@ async function ceGlobalCostByService(
       response.ResultsByTime || []
     )
       .flatMap(
-        result =>
-          result.Groups || []
+        r =>
+          r.Groups || []
       )
       .reduce(
         (
@@ -596,37 +368,26 @@ async function ceGlobalCostByService(
             parseFloat(
               group.Metrics
                 ?.UnblendedCost
-                ?.Amount ||
-                '0'
+                ?.Amount || '0'
             );
 
 
           if (
-            cost <= 0.005
+            cost > 0.005
           ) {
-            return acc;
+
+            const service =
+              group.Keys?.[0] ||
+              'Unknown';
+
+
+            acc[service] =
+              (
+                acc[service] ||
+                0
+              ) + cost;
+
           }
-
-
-          const service =
-            group.Keys?.[0] ||
-            'Unknown';
-
-
-          if (
-            !isGlobalService(
-              service
-            )
-          ) {
-            return acc;
-          }
-
-
-          acc[service] =
-            (
-              acc[service] ||
-              0
-            ) + cost;
 
 
           return acc;
@@ -638,9 +399,10 @@ async function ceGlobalCostByService(
   } catch (error) {
 
     console.warn(
-      'CE global services:',
+      'CE services:',
       error.message
     );
+
 
     return {};
 
@@ -649,14 +411,9 @@ async function ceGlobalCostByService(
 }
 
 
-/*
- * Monthly totals for the selected region + common global
- * services.
- */
 async function ceMonthlyTotals(
   ce,
-  year,
-  region
+  year
 ) {
 
   const {
@@ -668,10 +425,7 @@ async function ceMonthlyTotals(
 
   try {
 
-    /*
-     * Regional monthly cost.
-     */
-    const regionalResponse =
+    const response =
       await ce.send(
         new GetCostAndUsageCommand({
 
@@ -685,54 +439,6 @@ async function ceMonthlyTotals(
 
           Metrics: [
             'UnblendedCost'
-          ],
-
-          Filter: {
-
-            Dimensions: {
-
-              Key:
-                'REGION',
-
-              Values: [
-                region
-              ]
-
-            }
-
-          }
-
-        })
-      );
-
-
-    /*
-     * Global monthly service costs.
-     */
-    const globalResponse =
-      await ce.send(
-        new GetCostAndUsageCommand({
-
-          TimePeriod: {
-            Start: start,
-            End: end
-          },
-
-          Granularity:
-            'MONTHLY',
-
-          Metrics: [
-            'UnblendedCost'
-          ],
-
-          GroupBy: [
-            {
-              Type:
-                'DIMENSION',
-
-              Key:
-                'SERVICE'
-            }
           ]
 
         })
@@ -740,6 +446,7 @@ async function ceMonthlyTotals(
 
 
     const months = [
+
       'Jan',
       'Feb',
       'Mar',
@@ -752,126 +459,32 @@ async function ceMonthlyTotals(
       'Oct',
       'Nov',
       'Dec'
+
     ];
 
 
-    const globalByMonth = {};
-
-
-    for (
-      const result
-      of (
-        globalResponse.ResultsByTime ||
-        []
-      )
-    ) {
-
-      const monthIndex =
-        new Date(
-          result.TimePeriod.Start
-        ).getMonth();
-
-
-      let total =
-        0;
-
-
-      for (
-        const group
-        of (
-          result.Groups ||
-          []
-        )
-      ) {
-
-        const service =
-          group.Keys?.[0] ||
-          'Unknown';
-
-
-        if (
-          !isGlobalService(
-            service
-          )
-        ) {
-          continue;
-        }
-
-
-        total +=
-          parseFloat(
-            group.Metrics
-              ?.UnblendedCost
-              ?.Amount ||
-              '0'
-          );
-
-      }
-
-
-      globalByMonth[
-        monthIndex
-      ] =
-        total;
-
-    }
-
-
     return (
-      regionalResponse.ResultsByTime ||
-      []
+      response.ResultsByTime || []
     ).map(
-      result => {
+      result => ({
 
-        const monthIndex =
-          new Date(
-            result.TimePeriod.Start
-          ).getMonth();
+        month:
+          months[
+            new Date(
+              result.TimePeriod.Start
+            ).getMonth()
+          ],
 
+        amount:
+          Number(
+            parseFloat(
+              result.Total
+                ?.UnblendedCost
+                ?.Amount || '0'
+            ).toFixed(2)
+          )
 
-        const regional =
-          parseFloat(
-            result.Total
-              ?.UnblendedCost
-              ?.Amount ||
-              '0'
-          );
-
-
-        const global =
-          globalByMonth[
-            monthIndex
-          ] || 0;
-
-
-        return {
-
-          month:
-            months[
-              monthIndex
-            ],
-
-          regionalCost:
-            Number(
-              regional.toFixed(2)
-            ),
-
-          globalCost:
-            Number(
-              global.toFixed(2)
-            ),
-
-          amount:
-            Number(
-              (
-                regional +
-                global
-              ).toFixed(2)
-            )
-
-        };
-
-      }
+      })
     );
 
   } catch (error) {
@@ -881,6 +494,7 @@ async function ceMonthlyTotals(
       error.message
     );
 
+
     return [];
 
   }
@@ -888,120 +502,84 @@ async function ceMonthlyTotals(
 }
 
 
-const toList =
-  map =>
-    Object.entries(
-      map || {}
-    )
-
-      .map(
-        ([name, cost]) => ({
-
-          name,
-
-          cost:
-            parseFloat(
-              cost.toFixed(2)
-            )
-
-        })
-      )
-
-      .sort(
-        (a, b) =>
-          b.cost -
-          a.cost
-      );
-
-
-
-
-
 /*
  * ============================================================
- * EC2
+ * SAVINGS PLANS
  * ============================================================
  */
 
-
-/*
- * ============================================================
- * SAVINGS PLAN RECOMMENDATION
- * ============================================================
- *
- * Returns Cost Explorer Savings Plan recommendations when
- * available. If the account/API does not return a recommendation,
- * return a safe empty result instead of breaking the billing API.
- */
-async function getSavingsPlanRecommendation(ce) {
+async function getSavingsPlanRecommendation(
+  ce
+) {
 
   try {
 
-    /*
-     * Cost Explorer Savings Plans recommendations are optional.
-     * Some accounts/regions may not have recommendations available.
-     */
     const response =
       await ce.send(
         new GetSavingsPlansPurchaseRecommendationCommand({
+
           SavingsPlansType:
             'COMPUTE_SP',
+
           TermInYears:
             'ONE_YEAR',
+
           PaymentOption:
-            'NO_UPFRONT'
+            'NO_UPFRONT',
+
+          LookbackPeriodInDays:
+            'THIRTY_DAYS'
+
         })
       );
 
 
     const details =
-      response.SavingsPlansPurchaseRecommendation || {};
-
-
-    const recommendations =
-      details.SavingsPlansPurchaseRecommendationDetail || [];
-
-
-    const estimatedMonthlySavings =
-      recommendations.reduce(
-        (
-          sum,
-          item
-        ) =>
-          sum +
-          parseFloat(
-            item.EstimatedMonthlySavingsAmount || '0'
-          ),
-        0
+      (
+        response
+          .SavingsPlansPurchaseRecommendation
+          ?.RecommendationDetails ||
+        []
       );
+
+
+    const first =
+      details[0];
 
 
     return {
 
       available:
-        recommendations.length > 0,
+        details.length > 0,
 
       count:
-        recommendations.length,
+        details.length,
 
       estimatedMonthlySavings:
         Number(
-          estimatedMonthlySavings.toFixed(2)
+          parseFloat(
+            first
+              ?.EstimatedMonthlySavingsAmount ||
+            first
+              ?.EstimatedMonthlySavings ||
+            '0'
+          ).toFixed(2)
         ),
 
       recommendedCommitment:
-        recommendations[0] || null,
+        first
+          ?.HourlyCommitmentToPurchase ||
+        null,
 
-      recommendations
+      recommendations:
+        details.slice(
+          0,
+          10
+        )
 
     };
 
   } catch (error) {
-
-    console.warn(
-      'Savings Plans recommendation unavailable:',
-      error.message
-    );
 
     return {
 
@@ -1018,7 +596,10 @@ async function getSavingsPlanRecommendation(ce) {
         null,
 
       recommendations:
-        []
+        [],
+
+      error:
+        error.message
 
     };
 
@@ -1027,14 +608,15 @@ async function getSavingsPlanRecommendation(ce) {
 }
 
 
-
 /*
  * ============================================================
  * RESERVED INSTANCE RECOMMENDATION
  * ============================================================
  */
 
-async function getReservedInstanceRecommendation(ce) {
+async function getReservedInstanceRecommendation(
+  ce
+) {
 
   try {
 
@@ -1045,45 +627,35 @@ async function getReservedInstanceRecommendation(ce) {
           Service:
             'Amazon Elastic Compute Cloud - Compute',
 
+          AccountScope:
+            'PAYER',
+
           LookbackPeriodInDays:
             'THIRTY_DAYS',
 
-          PaymentOption:
-            'NO_UPFRONT',
-
           TermInYears:
-            'ONE_YEAR'
+            'ONE_YEAR',
+
+          PaymentOption:
+            'NO_UPFRONT'
 
         })
       );
 
 
-    const recommendations =
-      response.RecommendationsByAction ||
-      [];
-
-
     const details =
-      recommendations.flatMap(
-        item =>
-          item.RecommendationDetails ||
-          []
-      );
+      (
+        response.Recommendations || []
+      )
+        .flatMap(
+          r =>
+            r.RecommendationDetails ||
+            []
+        );
 
 
-    const estimatedMonthlySavings =
-      details.reduce(
-        (
-          sum,
-          item
-        ) =>
-          sum +
-          parseFloat(
-            item.EstimatedMonthlySavingsAmount ||
-            '0'
-          ),
-        0
-      );
+    const first =
+      details[0];
 
 
     return {
@@ -1096,21 +668,24 @@ async function getReservedInstanceRecommendation(ce) {
 
       estimatedMonthlySavings:
         Number(
-          estimatedMonthlySavings.toFixed(2)
+          parseFloat(
+            first
+              ?.EstimatedMonthlySavingsAmount ||
+            first
+              ?.EstimatedMonthlySavings ||
+            '0'
+          ).toFixed(2)
         ),
 
       recommendations:
-        details
+        details.slice(
+          0,
+          10
+        )
 
     };
 
   } catch (error) {
-
-    console.warn(
-      'Reserved Instance recommendation unavailable:',
-      error.message
-    );
-
 
     return {
 
@@ -1124,7 +699,10 @@ async function getReservedInstanceRecommendation(ce) {
         0,
 
       recommendations:
-        []
+        [],
+
+      error:
+        error.message
 
     };
 
@@ -1132,6 +710,42 @@ async function getReservedInstanceRecommendation(ce) {
 
 }
 
+
+/*
+ * ============================================================
+ * SERVICE LIST
+ * ============================================================
+ */
+
+const toList =
+  map =>
+    Object.entries(map)
+
+      .map(
+        ([name, cost]) => ({
+
+          name,
+
+          cost:
+            Number(
+              cost.toFixed(2)
+            )
+
+        })
+      )
+
+      .sort(
+        (a, b) =>
+          b.cost -
+          a.cost
+      );
+
+
+/*
+ * ============================================================
+ * EC2
+ * ============================================================
+ */
 
 async function fetchEC2Stats(
   ec2
@@ -4240,12 +3854,6 @@ async function fetchAllData(
 
     monthlyData,
 
-    selectedGlobalMap,
-
-    previousGlobalMap,
-
-    previous2GlobalMap,
-
     ec2Stats,
 
     elasticIPs,
@@ -4292,46 +3900,24 @@ async function fetchAllData(
       ceCostByService(
         ce,
         selected.start,
-        selected.end,
-        region
-      ),
-
-      ceCostByService(
-        ce,
-        previous.start,
-        previous.end,
-        region
-      ),
-
-      ceCostByService(
-        ce,
-        previous2.start,
-        previous2.end,
-        region
-      ),
-
-      ceMonthlyTotals(
-        ce,
-        billingYear,
-        region
-      ),
-
-      ceGlobalCostByService(
-        ce,
-        selected.start,
         selected.end
       ),
 
-      ceGlobalCostByService(
+      ceCostByService(
         ce,
         previous.start,
         previous.end
       ),
 
-      ceGlobalCostByService(
+      ceCostByService(
         ce,
         previous2.start,
         previous2.end
+      ),
+
+      ceMonthlyTotals(
+        ce,
+        billingYear
       ),
 
       fetchEC2Stats(
@@ -4395,12 +3981,6 @@ async function fetchAllData(
     ]);
 
 
-  /*
-   * ============================================================
-   * REGIONAL + GLOBAL COST BREAKDOWN
-   * ============================================================
-   */
-
   const services =
     toList(
       selectedMap
@@ -4419,36 +3999,7 @@ async function fetchAllData(
     );
 
 
-  /*
-   * Global/common AWS services.
-   *
-   * These are fetched without a REGION filter and are therefore
-   * common to the selected region.
-   */
-
-  const globalServices =
-    toList(
-      selectedGlobalMap
-    );
-
-
-  const lastMonthGlobalServices =
-    toList(
-      previousGlobalMap
-    );
-
-
-  const twoMonthsAgoGlobalServices =
-    toList(
-      previous2GlobalMap
-    );
-
-
-  /*
-   * Regional cost.
-   */
-
-  const regionalCost =
+  const currentMonthTotal =
     Number(
       services
         .reduce(
@@ -4463,61 +4014,6 @@ async function fetchAllData(
         )
         .toFixed(2)
     );
-
-
-  /*
-   * Global/common cost.
-   */
-
-  const globalCost =
-    Number(
-      globalServices
-        .reduce(
-          (
-            sum,
-            item
-          ) =>
-            sum +
-            item.cost,
-
-          0
-        )
-        .toFixed(2)
-    );
-
-
-  /*
-   * Total = selected region + global/common services.
-   */
-
-  const currentMonthTotal =
-    Number(
-      (
-        regionalCost +
-        globalCost
-      ).toFixed(2)
-    );
-
-
-  /*
-   * Combined services.
-   *
-   * Existing frontend continues to receive `services`,
-   * while the new regional/global fields allow the UI to
-   * display the split.
-   */
-
-  const combinedServices = [
-    ...services,
-    ...globalServices
-  ].sort(
-    (
-      a,
-      b
-    ) =>
-      b.cost -
-      a.cost
-  );
 
 
   /*
@@ -4689,60 +4185,6 @@ async function fetchAllData(
       selected.isCurrentMonth,
 
     currentMonthTotal,
-
-
-    /*
-     * ============================================================
-     * REGIONAL + GLOBAL BILLING SUMMARY
-     * ============================================================
-     */
-
-    billingSummary: {
-
-      selectedRegion:
-        region,
-
-      regionalCost,
-
-      globalCost,
-
-      totalCost:
-        currentMonthTotal
-
-    },
-
-
-    /*
-     * Current month service split
-     */
-
-    regionalServices:
-      services,
-
-    globalServices:
-      globalServices,
-
-
-    /*
-     * Previous month service split
-     */
-
-    lastMonthRegionalServices:
-      lastMonthServices,
-
-    lastMonthGlobalServices:
-      lastMonthGlobalServices,
-
-
-    /*
-     * Two months ago service split
-     */
-
-    twoMonthsAgoRegionalServices:
-      twoMonthsAgoServices,
-
-    twoMonthsAgoGlobalServices:
-      twoMonthsAgoGlobalServices,
 
 
     dateRange: {

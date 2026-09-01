@@ -1,0 +1,3210 @@
+```javascript
+const express = require('express');
+const path = require('path');
+
+const {
+  CostExplorerClient,
+  GetCostAndUsageCommand
+} = require('@aws-sdk/client-cost-explorer');
+
+const {
+  EC2Client,
+  DescribeInstancesCommand,
+  DescribeAddressesCommand,
+  DescribeVolumesCommand,
+  DescribeVpcsCommand,
+  DescribeSubnetsCommand,
+  DescribeNatGatewaysCommand,
+  DescribeInternetGatewaysCommand,
+  DescribeSecurityGroupsCommand,
+  DescribeKeyPairsCommand
+} = require('@aws-sdk/client-ec2');
+
+const {
+  S3Client,
+  ListBucketsCommand
+} = require('@aws-sdk/client-s3');
+
+const {
+  STSClient,
+  GetCallerIdentityCommand
+} = require('@aws-sdk/client-sts');
+
+const {
+  ElasticLoadBalancingV2Client,
+  DescribeLoadBalancersCommand
+} = require('@aws-sdk/client-elastic-load-balancing-v2');
+
+const {
+  RDSClient,
+  DescribeDBInstancesCommand
+} = require('@aws-sdk/client-rds');
+
+const {
+  CloudWatchLogsClient
+} = require('@aws-sdk/client-cloudwatch-logs');
+
+const {
+  CloudTrailClient
+} = require('@aws-sdk/client-cloudtrail');
+
+
+/*
+ * CloudWatch based EC2/RDS idle detection
+ */
+const {
+  getEC2IdleMetrics,
+  isEC2Idle,
+  getRDSIdleMetrics,
+  isRDSIdle
+} = require('./cloudwatch');
+
+
+/*
+ * FinOps optimization
+ *
+ * finops.js now handles:
+ *
+ * - EBS GP2 -> GP3
+ * - Unattached EBS
+ * - AMI > 90 days
+ * - Snapshot > 90 days
+ * - Orphaned snapshots
+ */
+const {
+  analyzeEBS,
+  buildEBSRecommendations
+} = require('./finops');
+
+
+const app = express();
+
+const PORT =
+  process.env.PORT || 3001;
+
+const HOST =
+  '0.0.0.0';
+
+
+app.use(
+  express.static(
+    path.join(__dirname, 'public')
+  )
+);
+
+app.use(
+  express.json()
+);
+
+
+/*
+ * ============================================================
+ * CLIENT CACHE
+ * ============================================================
+ */
+
+const clientCache = {};
+
+
+function getClients(region) {
+
+  if (
+    clientCache[region]
+  ) {
+
+    return clientCache[region];
+
+  }
+
+
+  const cfg = {
+    region
+  };
+
+
+  clientCache[region] = {
+
+    ce:
+      new CostExplorerClient({
+        region: 'us-east-1'
+      }),
+
+    ec2:
+      new EC2Client(cfg),
+
+    s3:
+      new S3Client(cfg),
+
+    sts:
+      new STSClient(cfg),
+
+    elb:
+      new ElasticLoadBalancingV2Client(cfg),
+
+    rds:
+      new RDSClient(cfg),
+
+    logs:
+      new CloudWatchLogsClient(cfg),
+
+    cloudtrail:
+      new CloudTrailClient(cfg)
+
+  };
+
+
+  return clientCache[region];
+}
+
+
+/*
+ * ============================================================
+ * DATE HELPERS
+ * ============================================================
+ */
+
+const fmtDate =
+  d =>
+    d.toISOString().split('T')[0];
+
+
+function monthRange(
+  year,
+  month
+) {
+
+  const now =
+    new Date();
+
+
+  const isCurrentMonth =
+    year === now.getFullYear() &&
+    month === now.getMonth();
+
+
+  const pad =
+    n =>
+      String(n).padStart(2, '0');
+
+
+  const startStr =
+    `${year}-${pad(month + 1)}-01`;
+
+
+  let ceEndStr;
+
+
+  if (
+    isCurrentMonth
+  ) {
+
+    const tomorrow =
+      new Date(
+        now.getFullYear(),
+        now.getMonth(),
+        now.getDate() + 1
+      );
+
+
+    ceEndStr =
+      `${tomorrow.getFullYear()}-${pad(tomorrow.getMonth() + 1)}-${pad(tomorrow.getDate())}`;
+
+  } else {
+
+    const nextMonth =
+      month + 2;
+
+
+    ceEndStr =
+      nextMonth > 12
+
+        ? `${year + 1}-01-01`
+
+        : `${year}-${pad(nextMonth)}-01`;
+
+  }
+
+
+  const lastDay =
+    new Date(
+      year,
+      month + 1,
+      0
+    ).getDate();
+
+
+  const displayEnd =
+    isCurrentMonth
+
+      ? `${year}-${pad(month + 1)}-${pad(now.getDate())}`
+
+      : `${year}-${pad(month + 1)}-${pad(lastDay)}`;
+
+
+  return {
+
+    start:
+      startStr,
+
+    end:
+      ceEndStr,
+
+    displayStart:
+      startStr,
+
+    displayEnd,
+
+    isCurrentMonth
+
+  };
+}
+
+
+function yearRange(year) {
+
+  const now =
+    new Date();
+
+
+  const y =
+    year ||
+    now.getFullYear();
+
+
+  const end =
+    y === now.getFullYear()
+
+      ? new Date(
+          now.getFullYear(),
+          now.getMonth() + 1,
+          1
+        )
+
+      : new Date(
+          y + 1,
+          0,
+          1
+        );
+
+
+  return {
+
+    start:
+      `${y}-01-01`,
+
+    end:
+      fmtDate(end)
+
+  };
+}
+
+
+/*
+ * ============================================================
+ * COST EXPLORER
+ * ============================================================
+ */
+
+async function ceCostByService(
+  ce,
+  start,
+  end
+) {
+
+  try {
+
+    const response =
+      await ce.send(
+        new GetCostAndUsageCommand({
+
+          TimePeriod: {
+            Start: start,
+            End: end
+          },
+
+          Granularity:
+            'MONTHLY',
+
+          Metrics: [
+            'UnblendedCost'
+          ],
+
+          GroupBy: [
+            {
+              Type:
+                'DIMENSION',
+
+              Key:
+                'SERVICE'
+            }
+          ]
+
+        })
+      );
+
+
+    return (
+      response.ResultsByTime || []
+    )
+      .flatMap(
+        r =>
+          r.Groups || []
+      )
+      .reduce(
+        (
+          acc,
+          group
+        ) => {
+
+          const cost =
+            parseFloat(
+              group.Metrics
+                .UnblendedCost
+                .Amount
+            );
+
+
+          if (
+            cost > 0.005
+          ) {
+
+            const service =
+              group.Keys[0];
+
+
+            acc[service] =
+              (
+                acc[service] || 0
+              ) + cost;
+
+          }
+
+
+          return acc;
+
+        },
+        {}
+      );
+
+  } catch (error) {
+
+    console.warn(
+      'CE services:',
+      error.message
+    );
+
+
+    return {};
+
+  }
+}
+
+
+async function ceMonthlyTotals(
+  ce,
+  year
+) {
+
+  const {
+    start,
+    end
+  } =
+    yearRange(year);
+
+
+  try {
+
+    const response =
+      await ce.send(
+        new GetCostAndUsageCommand({
+
+          TimePeriod: {
+            Start: start,
+            End: end
+          },
+
+          Granularity:
+            'MONTHLY',
+
+          Metrics: [
+            'UnblendedCost'
+          ]
+
+        })
+      );
+
+
+    const months = [
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec'
+    ];
+
+
+    return (
+      response.ResultsByTime || []
+    ).map(
+      result => ({
+
+        month:
+          months[
+            new Date(
+              result.TimePeriod.Start
+            ).getMonth()
+          ],
+
+        amount:
+          parseFloat(
+            parseFloat(
+              result.Total
+                .UnblendedCost
+                .Amount
+            ).toFixed(2)
+          )
+
+      })
+    );
+
+  } catch (error) {
+
+    console.warn(
+      'CE monthly:',
+      error.message
+    );
+
+
+    return [];
+
+  }
+}
+
+
+const toList =
+  map =>
+    Object.entries(map)
+
+      .map(
+        ([name, cost]) => ({
+
+          name,
+
+          cost:
+            parseFloat(
+              cost.toFixed(2)
+            )
+
+        })
+      )
+
+      .sort(
+        (a, b) =>
+          b.cost - a.cost
+      );
+
+
+/*
+ * ============================================================
+ * EC2
+ * ============================================================
+ */
+
+async function fetchEC2Stats(ec2) {
+
+  try {
+
+    let instances = [];
+
+    let nextToken;
+
+
+    do {
+
+      const response =
+        await ec2.send(
+          new DescribeInstancesCommand({
+
+            MaxResults:
+              1000,
+
+            NextToken:
+              nextToken
+
+          })
+        );
+
+
+      instances.push(
+        ...(
+          response.Reservations
+            ?.flatMap(
+              reservation =>
+                reservation.Instances
+            ) || []
+        )
+      );
+
+
+      nextToken =
+        response.NextToken;
+
+
+    } while (
+      nextToken
+    );
+
+
+    const runningInstances =
+      instances.filter(
+        instance =>
+          instance.State?.Name ===
+          'running'
+      );
+
+
+    return {
+
+      total:
+        instances.length,
+
+      running:
+        runningInstances.length,
+
+      stopped:
+        instances.filter(
+          instance =>
+            [
+              'stopped',
+              'stopping'
+            ].includes(
+              instance.State?.Name
+            )
+        ).length,
+
+      types:
+        [
+          ...new Set(
+            instances.map(
+              instance =>
+                instance.InstanceType
+            )
+          )
+        ].slice(
+          0,
+          5
+        ),
+
+      instances:
+        runningInstances.map(
+          instance => ({
+
+            instanceId:
+              instance.InstanceId,
+
+            instanceType:
+              instance.InstanceType,
+
+            state:
+              instance.State?.Name,
+
+            tags:
+              Object.fromEntries(
+                (
+                  instance.Tags ||
+                  []
+                ).map(
+                  tag => [
+                    tag.Key,
+                    tag.Value
+                  ]
+                )
+              )
+
+          })
+        )
+
+    };
+
+  } catch (error) {
+
+    console.warn(
+      'EC2:',
+      error.message
+    );
+
+
+    return {
+
+      total: 0,
+
+      running: 0,
+
+      stopped: 0,
+
+      types: [],
+
+      instances: []
+
+    };
+
+  }
+}
+
+
+/*
+ * ============================================================
+ * ELASTIC IP
+ * ============================================================
+ */
+
+async function fetchElasticIPs(ec2) {
+
+  try {
+
+    const response =
+      await ec2.send(
+        new DescribeAddressesCommand({})
+      );
+
+
+    const addresses =
+      response.Addresses || [];
+
+
+    return {
+
+      total:
+        addresses.length,
+
+      unused:
+        addresses.filter(
+          address =>
+            !address.AssociationId
+        ).length
+
+    };
+
+  } catch (error) {
+
+    console.warn(
+      'EIPs:',
+      error.message
+    );
+
+
+    return {
+
+      total: 0,
+
+      unused: 0
+
+    };
+
+  }
+}
+
+
+/*
+ * ============================================================
+ * EBS VOLUME INVENTORY
+ * ============================================================
+ */
+
+async function fetchVolumes(ec2) {
+
+  try {
+
+    let volumes = [];
+
+    let nextToken;
+
+
+    do {
+
+      const response =
+        await ec2.send(
+          new DescribeVolumesCommand({
+
+            MaxResults:
+              500,
+
+            NextToken:
+              nextToken
+
+          })
+        );
+
+
+      volumes.push(
+        ...(
+          response.Volumes ||
+          []
+        )
+      );
+
+
+      nextToken =
+        response.NextToken;
+
+
+    } while (
+      nextToken
+    );
+
+
+    return {
+
+      total:
+        volumes.length,
+
+      gp2:
+        volumes.filter(
+          volume =>
+            volume.VolumeType ===
+            'gp2'
+        ).length,
+
+      gp3:
+        volumes.filter(
+          volume =>
+            volume.VolumeType ===
+            'gp3'
+        ).length,
+
+      unused:
+        volumes.filter(
+          volume =>
+            volume.State ===
+            'available'
+        ).length,
+
+      gp2Gb:
+        volumes
+          .filter(
+            volume =>
+              volume.VolumeType ===
+              'gp2'
+          )
+          .reduce(
+            (
+              sum,
+              volume
+            ) =>
+              sum + volume.Size,
+            0
+          )
+
+    };
+
+  } catch (error) {
+
+    console.warn(
+      'Volumes:',
+      error.message
+    );
+
+
+    return {
+
+      total: 0,
+
+      gp2: 0,
+
+      gp3: 0,
+
+      unused: 0,
+
+      gp2Gb: 0
+
+    };
+
+  }
+}
+
+
+/*
+ * ============================================================
+ * VPC
+ * ============================================================
+ */
+
+async function fetchVPCStats(ec2) {
+
+  try {
+
+    const [
+      vpcs,
+      subnets,
+      natGateways,
+      internetGateways,
+      securityGroups,
+      keyPairs
+    ] =
+      await Promise.all([
+
+        ec2.send(
+          new DescribeVpcsCommand({})
+        ),
+
+        ec2.send(
+          new DescribeSubnetsCommand({})
+        ),
+
+        ec2.send(
+          new DescribeNatGatewaysCommand({
+
+            Filter: [
+              {
+                Name:
+                  'state',
+
+                Values: [
+                  'available'
+                ]
+              }
+            ]
+
+          })
+        ),
+
+        ec2.send(
+          new DescribeInternetGatewaysCommand({})
+        ),
+
+        ec2.send(
+          new DescribeSecurityGroupsCommand({})
+        ),
+
+        ec2.send(
+          new DescribeKeyPairsCommand({})
+        )
+
+      ]);
+
+
+    const allSubnets =
+      subnets.Subnets || [];
+
+
+    const publicSubnets =
+      allSubnets.filter(
+        subnet =>
+          subnet.MapPublicIpOnLaunch
+      ).length;
+
+
+    return {
+
+      vpcs:
+        (
+          vpcs.Vpcs ||
+          []
+        ).length,
+
+      subnets: {
+
+        total:
+          allSubnets.length,
+
+        public:
+          publicSubnets,
+
+        private:
+          allSubnets.length -
+          publicSubnets
+
+      },
+
+      natGateways:
+        (
+          natGateways.NatGateways ||
+          []
+        ).length,
+
+      internetGateways:
+        (
+          internetGateways.InternetGateways ||
+          []
+        ).length,
+
+      securityGroups:
+        (
+          securityGroups.SecurityGroups ||
+          []
+        ).length,
+
+      keyPairs:
+        (
+          keyPairs.KeyPairs ||
+          []
+        ).length
+
+    };
+
+  } catch (error) {
+
+    console.warn(
+      'VPC:',
+      error.message
+    );
+
+
+    return {
+
+      vpcs: 0,
+
+      subnets: {
+
+        total: 0,
+
+        public: 0,
+
+        private: 0
+
+      },
+
+      natGateways: 0,
+
+      internetGateways: 0,
+
+      securityGroups: 0,
+
+      keyPairs: 0
+
+    };
+
+  }
+}
+
+
+/*
+ * ============================================================
+ * ALB
+ * ============================================================
+ */
+
+async function fetchALBStats(elb) {
+
+  try {
+
+    let loadBalancers = [];
+
+    let marker;
+
+
+    do {
+
+      const response =
+        await elb.send(
+          new DescribeLoadBalancersCommand({
+
+            Marker:
+              marker
+
+          })
+        );
+
+
+      loadBalancers.push(
+        ...(
+          response.LoadBalancers ||
+          []
+        )
+      );
+
+
+      marker =
+        response.NextMarker;
+
+
+    } while (
+      marker
+    );
+
+
+    const albs =
+      loadBalancers.filter(
+        lb =>
+          lb.Type ===
+          'application'
+      );
+
+
+    return {
+
+      total:
+        albs.length,
+
+      public:
+        albs.filter(
+          lb =>
+            lb.Scheme ===
+            'internet-facing'
+        ).length,
+
+      private:
+        albs.filter(
+          lb =>
+            lb.Scheme ===
+            'internal'
+        ).length
+
+    };
+
+  } catch (error) {
+
+    console.warn(
+      'ALB:',
+      error.message
+    );
+
+
+    return {
+
+      total: 0,
+
+      public: 0,
+
+      private: 0
+
+    };
+
+  }
+}
+
+
+/*
+ * ============================================================
+ * S3
+ * ============================================================
+ */
+
+async function fetchS3Count(s3) {
+
+  try {
+
+    const response =
+      await s3.send(
+        new ListBucketsCommand({})
+      );
+
+
+    return (
+      response.Buckets ||
+      []
+    ).length;
+
+  } catch (error) {
+
+    console.warn(
+      'S3:',
+      error.message
+    );
+
+
+    return 0;
+
+  }
+}
+
+
+/*
+ * ============================================================
+ * RDS
+ * ============================================================
+ */
+
+async function fetchRDSStats(rds) {
+
+  try {
+
+    let instances = [];
+
+    let marker;
+
+
+    do {
+
+      const response =
+        await rds.send(
+          new DescribeDBInstancesCommand({
+
+            Marker:
+              marker,
+
+            MaxRecords:
+              100
+
+          })
+        );
+
+
+      instances.push(
+        ...(
+          response.DBInstances ||
+          []
+        )
+      );
+
+
+      marker =
+        response.Marker;
+
+
+    } while (
+      marker
+    );
+
+
+    const available =
+      instances.filter(
+        instance =>
+          instance.DBInstanceStatus ===
+          'available'
+      ).length;
+
+
+    const stopped =
+      instances.filter(
+        instance =>
+          instance.DBInstanceStatus ===
+          'stopped'
+      ).length;
+
+
+    const engines = {};
+
+
+    for (
+      const instance of instances
+    ) {
+
+      const engine =
+        instance.Engine ||
+        'unknown';
+
+
+      engines[engine] =
+        (
+          engines[engine] ||
+          0
+        ) + 1;
+
+    }
+
+
+    const multiAZ =
+      instances.filter(
+        instance =>
+          instance.MultiAZ
+      ).length;
+
+
+    const nonMultiAZ =
+      instances.length -
+      multiAZ;
+
+
+    const gp2Storage =
+      instances.filter(
+        instance =>
+          instance.StorageType ===
+          'gp2'
+      ).length;
+
+
+    const stoppedIds =
+      instances
+        .filter(
+          instance =>
+            instance.DBInstanceStatus ===
+            'stopped'
+        )
+        .map(
+          instance =>
+            instance.DBInstanceIdentifier
+        );
+
+
+    return {
+
+      total:
+        instances.length,
+
+      available,
+
+      stopped,
+
+      engines,
+
+      multiAZ,
+
+      nonMultiAZ,
+
+      gp2Storage,
+
+      stoppedIds,
+
+      instances:
+        instances
+          .filter(
+            instance =>
+              instance.DBInstanceStatus ===
+              'available'
+          )
+          .map(
+            instance => ({
+
+              identifier:
+                instance.DBInstanceIdentifier,
+
+              instanceClass:
+                instance.DBInstanceClass,
+
+              engine:
+                instance.Engine,
+
+              status:
+                instance.DBInstanceStatus,
+
+              multiAZ:
+                instance.MultiAZ,
+
+              storageType:
+                instance.StorageType
+
+            })
+          )
+
+    };
+
+  } catch (error) {
+
+    console.warn(
+      'RDS:',
+      error.message
+    );
+
+
+    return {
+
+      total: 0,
+
+      available: 0,
+
+      stopped: 0,
+
+      engines: {},
+
+      multiAZ: 0,
+
+      nonMultiAZ: 0,
+
+      gp2Storage: 0,
+
+      stoppedIds: [],
+
+      instances: []
+
+    };
+
+  }
+}
+
+
+/*
+ * ============================================================
+ * CLOUDWATCH IDLE ANALYSIS
+ * ============================================================
+ */
+
+async function fetchIdleResources(
+  region,
+  ec2Instances,
+  rdsInstances
+) {
+
+  console.log(
+    `CloudWatch idle analysis: ${ec2Instances.length} EC2, ${rdsInstances.length} RDS`
+  );
+
+
+  const idleEC2 = [];
+
+  const idleRDS = [];
+
+
+  /*
+   * EC2
+   */
+
+  for (
+    const instance of ec2Instances
+  ) {
+
+    try {
+
+      const metrics =
+        await getEC2IdleMetrics(
+          region,
+          instance.instanceId,
+          30
+        );
+
+
+      if (
+        isEC2Idle(metrics)
+      ) {
+
+        idleEC2.push({
+
+          ...instance,
+
+          avgCpu:
+            Number(
+              metrics.avgCpu.toFixed(2)
+            ),
+
+          maxCpu:
+            Number(
+              metrics.maxCpu.toFixed(2)
+            ),
+
+          avgNetworkIn:
+            Number(
+              metrics.avgNetworkIn.toFixed(2)
+            ),
+
+          avgNetworkOut:
+            Number(
+              metrics.avgNetworkOut.toFixed(2)
+            ),
+
+          avgDiskReadOps:
+            Number(
+              metrics.avgDiskReadOps.toFixed(2)
+            ),
+
+          avgDiskWriteOps:
+            Number(
+              metrics.avgDiskWriteOps.toFixed(2)
+            ),
+
+          evaluationDays:
+            metrics.evaluationDays
+
+        });
+
+      }
+
+    } catch (error) {
+
+      console.warn(
+        `EC2 CloudWatch failed for ${instance.instanceId}:`,
+        error.message
+      );
+
+    }
+
+  }
+
+
+  /*
+   * RDS
+   */
+
+  for (
+    const database of rdsInstances
+  ) {
+
+    try {
+
+      const metrics =
+        await getRDSIdleMetrics(
+          region,
+          database.identifier,
+          30
+        );
+
+
+      if (
+        isRDSIdle(metrics)
+      ) {
+
+        idleRDS.push({
+
+          ...database,
+
+          avgCpu:
+            Number(
+              metrics.avgCpu.toFixed(2)
+            ),
+
+          avgConnections:
+            Number(
+              metrics.avgConnections.toFixed(2)
+            ),
+
+          avgReadIOPS:
+            Number(
+              metrics.avgReadIOPS.toFixed(2)
+            ),
+
+          avgWriteIOPS:
+            Number(
+              metrics.avgWriteIOPS.toFixed(2)
+            ),
+
+          avgNetworkIn:
+            Number(
+              metrics.avgNetworkIn.toFixed(2)
+            ),
+
+          avgNetworkOut:
+            Number(
+              metrics.avgNetworkOut.toFixed(2)
+            ),
+
+          evaluationDays:
+            metrics.evaluationDays
+
+        });
+
+      }
+
+    } catch (error) {
+
+      console.warn(
+        `RDS CloudWatch failed for ${database.identifier}:`,
+        error.message
+      );
+
+    }
+
+  }
+
+
+  return {
+
+    ec2:
+      idleEC2,
+
+    rds:
+      idleRDS
+
+  };
+
+}
+
+
+/*
+ * ============================================================
+ * EXISTING RECOMMENDATIONS
+ * ============================================================
+ */
+
+function buildRecommendations(data) {
+
+  const {
+    services,
+    infraStats,
+    currentMonthTotal,
+    idleResources
+  } =
+    data;
+
+
+  const recommendations = [];
+
+
+  const svc =
+    name =>
+      services.find(
+        service =>
+          service.name
+            .toLowerCase()
+            .includes(
+              name.toLowerCase()
+            )
+      );
+
+
+  const idleEC2 =
+    idleResources?.ec2 ||
+    [];
+
+
+  const idleRDS =
+    idleResources?.rds ||
+    [];
+
+
+  /*
+   * EC2 CloudWatch idle
+   */
+
+  if (
+    idleEC2.length > 0
+  ) {
+
+    recommendations.push({
+
+      category:
+        'Compute',
+
+      priority:
+        'HIGH',
+
+      icon:
+        '💤',
+
+      title:
+        `Review ${idleEC2.length} Idle EC2 Instance${idleEC2.length > 1 ? 's' : ''}`,
+
+      description:
+        `${idleEC2.length} running EC2 instance${idleEC2.length > 1 ? 's have' : ' has'} shown consistently low utilization over the last 30 days based on CloudWatch CPU, network and disk metrics.`,
+
+      monthlySaving:
+        0,
+
+      action:
+        'Review the listed instances with the owner. Stop or terminate only after confirming they are not required.',
+
+      resources:
+        idleEC2
+
+    });
+
+  }
+
+
+  /*
+   * RDS CloudWatch idle
+   */
+
+  if (
+    idleRDS.length > 0
+  ) {
+
+    recommendations.push({
+
+      category:
+        'Database',
+
+      priority:
+        'HIGH',
+
+      icon:
+        '💤',
+
+      title:
+        `Review ${idleRDS.length} Idle RDS Instance${idleRDS.length > 1 ? 's' : ''}`,
+
+      description:
+        `${idleRDS.length} available RDS instance${idleRDS.length > 1 ? 's have' : ' has'} shown consistently low CPU, connections and I/O activity over the last 30 days based on CloudWatch metrics.`,
+
+      monthlySaving:
+        0,
+
+      action:
+        'Review the database owner and workload before stopping, deleting or resizing the database.',
+
+      resources:
+        idleRDS
+
+    });
+
+  }
+
+
+  /*
+   * Elastic IP
+   */
+
+  if (
+    infraStats.elasticIPs.unused > 0
+  ) {
+
+    recommendations.push({
+
+      category:
+        'Networking',
+
+      priority:
+        'HIGH',
+
+      icon:
+        '🌐',
+
+      title:
+        `Release ${infraStats.elasticIPs.unused} Unused Elastic IP${infraStats.elasticIPs.unused > 1 ? 's' : ''}`,
+
+      description:
+        'Elastic IPs not attached to a running instance should be reviewed and released when no longer required.',
+
+      monthlySaving:
+        infraStats.elasticIPs.unused *
+        3.6,
+
+      action:
+        'EC2 → Elastic IPs → select unassociated IPs → Release'
+
+    });
+
+  }
+
+
+  /*
+   * Unattached EBS
+   */
+
+  if (
+    infraStats.volumes.unused > 0
+  ) {
+
+    recommendations.push({
+
+      category:
+        'Storage',
+
+      priority:
+        'HIGH',
+
+      icon:
+        '💾',
+
+      title:
+        `Review ${infraStats.volumes.unused} Unattached EBS Volume${infraStats.volumes.unused > 1 ? 's' : ''}`,
+
+      description:
+        'EBS volumes in available state are detached but continue generating storage costs.',
+
+      monthlySaving:
+        infraStats.volumes.unused *
+        8,
+
+      action:
+        'EC2 → Volumes → filter State = available → verify ownership → snapshot if required → delete'
+
+    });
+
+  }
+
+
+  /*
+   * GP2
+   */
+
+  if (
+    infraStats.volumes.gp2 > 0
+  ) {
+
+    const saving =
+      Math.max(
+        infraStats.volumes.gp2Gb *
+        0.02,
+
+        infraStats.volumes.gp2 *
+        2
+      );
+
+
+    recommendations.push({
+
+      category:
+        'Storage',
+
+      priority:
+        'MEDIUM',
+
+      icon:
+        '📀',
+
+      title:
+        `Migrate ${infraStats.volumes.gp2} GP2 Volumes to GP3`,
+
+      description:
+        'GP3 provides lower storage cost and baseline performance compared with GP2.',
+
+      monthlySaving:
+        saving,
+
+      action:
+        'EC2 → Volumes → select GP2 → Modify Volume → change Volume Type to gp3'
+
+    });
+
+  }
+
+
+  /*
+   * Stopped EC2
+   */
+
+  if (
+    infraStats.ec2.stopped > 0
+  ) {
+
+    recommendations.push({
+
+      category:
+        'Compute',
+
+      priority:
+        'MEDIUM',
+
+      icon:
+        '🖥️',
+
+      title:
+        `Review ${infraStats.ec2.stopped} Stopped EC2 Instance${infraStats.ec2.stopped > 1 ? 's' : ''}`,
+
+      description:
+        'Stopped EC2 instances can continue generating EBS storage costs.',
+
+      monthlySaving:
+        infraStats.ec2.stopped *
+        5,
+
+      action:
+        'EC2 → Instances → filter stopped → review → terminate if no longer required'
+
+    });
+
+  }
+
+
+  /*
+   * EC2 right-sizing
+   */
+
+  const ec2Service =
+    svc('Elastic Compute Cloud') ||
+    svc('EC2');
+
+
+  if (
+    ec2Service &&
+    ec2Service.cost > 100
+  ) {
+
+    recommendations.push({
+
+      category:
+        'Compute',
+
+      priority:
+        'HIGH',
+
+      icon:
+        '📉',
+
+      title:
+        'Right-size Underutilized EC2 Instances',
+
+      description:
+        'Review CloudWatch utilization and identify instances that are consistently underutilized.',
+
+      monthlySaving:
+        ec2Service.cost *
+        0.20,
+
+      action:
+        'Review CloudWatch CPU, network and disk metrics before changing instance types.'
+
+    });
+
+  }
+
+
+  /*
+   * Spot
+   */
+
+  if (
+    ec2Service &&
+    ec2Service.cost > 150
+  ) {
+
+    recommendations.push({
+
+      category:
+        'Compute',
+
+      priority:
+        'HIGH',
+
+      icon:
+        '⚡',
+
+      title:
+        'Use Spot Instances for Fault-Tolerant Workloads',
+
+      description:
+        'Evaluate CI/CD, batch, development and other interruption-tolerant workloads for Spot usage.',
+
+      monthlySaving:
+        ec2Service.cost *
+        0.35,
+
+      action:
+        'Review Auto Scaling Mixed Instances configuration and add Spot capacity where appropriate.'
+
+    });
+
+  }
+
+
+  /*
+   * Savings Plans
+   */
+
+  if (
+    currentMonthTotal > 300
+  ) {
+
+    recommendations.push({
+
+      category:
+        'Pricing',
+
+      priority:
+        'HIGH',
+
+      icon:
+        '💰',
+
+      title:
+        'Review Savings Plans and Reserved Instances',
+
+      description:
+        'Review steady workloads and determine whether a commitment can reduce recurring compute costs.',
+
+      monthlySaving:
+        currentMonthTotal *
+        0.30,
+
+      action:
+        'Cost Explorer → Savings Plans → Purchase Recommendations'
+
+    });
+
+  }
+
+
+  /*
+   * NAT Gateway
+   */
+
+  if (
+    infraStats.natGateways > 1
+  ) {
+
+    recommendations.push({
+
+      category:
+        'Networking',
+
+      priority:
+        'MEDIUM',
+
+      icon:
+        '🔀',
+
+      title:
+        `Audit ${infraStats.natGateways} NAT Gateways`,
+
+      description:
+        'Review low-traffic NAT Gateways and consolidate only where architecture permits.',
+
+      monthlySaving:
+        (
+          infraStats.natGateways -
+          1
+        ) *
+        32 *
+        0.35,
+
+      action:
+        'Review VPC Flow Logs and NAT Gateway traffic before consolidation.'
+
+    });
+
+  }
+
+
+  /*
+   * S3
+   */
+
+  const s3Service =
+    svc('S3') ||
+    svc('Simple Storage');
+
+
+  if (
+    s3Service &&
+    s3Service.cost > 10
+  ) {
+
+    recommendations.push({
+
+      category:
+        'S3 Storage',
+
+      priority:
+        'HIGH',
+
+      icon:
+        '🪣',
+
+      title:
+        'Enable S3 Lifecycle and Intelligent Tiering',
+
+      description:
+        `S3 spend is $${s3Service.cost.toFixed(2)}. Review lifecycle and storage class opportunities.`,
+
+      monthlySaving:
+        s3Service.cost *
+        0.40,
+
+      action:
+        'S3 → Bucket → Management → Lifecycle → configure transition and expiration rules.'
+
+    });
+
+  }
+
+
+  /*
+   * S3 versioning
+   */
+
+  if (
+    infraStats.s3Buckets > 5
+  ) {
+
+    recommendations.push({
+
+      category:
+        'S3 Storage',
+
+      priority:
+        'MEDIUM',
+
+      icon:
+        '🗂️',
+
+      title:
+        `Audit S3 Versioning Across ${infraStats.s3Buckets} Buckets`,
+
+      description:
+        'Review old object versions and replication rules and configure lifecycle policies where appropriate.',
+
+      monthlySaving:
+        infraStats.s3Buckets *
+        3,
+
+      action:
+        'S3 → Bucket → Management → Lifecycle → expire non-current versions.'
+
+    });
+
+  }
+
+
+  /*
+   * CloudWatch retention
+   */
+
+  recommendations.push({
+
+    category:
+      'Monitoring',
+
+    priority:
+      'LOW',
+
+    icon:
+      '📊',
+
+    title:
+      'Set CloudWatch Log Group Retention',
+
+    description:
+      'Set appropriate retention periods instead of retaining logs indefinitely.',
+
+    monthlySaving:
+      20,
+
+    action:
+      'CloudWatch → Log groups → identify groups without retention → set appropriate retention.'
+
+  });
+
+
+  /*
+   * RDS
+   */
+
+  const rds =
+    infraStats.rds ||
+    {};
+
+
+  if (
+    rds.stopped > 0
+  ) {
+
+    recommendations.push({
+
+      category:
+        'Database',
+
+      priority:
+        'HIGH',
+
+      icon:
+        '🗄️',
+
+      title:
+        `Review ${rds.stopped} Stopped RDS Instance${rds.stopped > 1 ? 's' : ''}`,
+
+      description:
+        'Stopped RDS instances still incur storage charges.',
+
+      monthlySaving:
+        rds.stopped *
+        15,
+
+      action:
+        'RDS → Databases → filter stopped → review retention requirements.'
+
+    });
+
+  }
+
+
+  if (
+    rds.gp2Storage > 0
+  ) {
+
+    recommendations.push({
+
+      category:
+        'Database',
+
+      priority:
+        'MEDIUM',
+
+      icon:
+        '💽',
+
+      title:
+        `Review ${rds.gp2Storage} RDS GP2 Storage Instance${rds.gp2Storage > 1 ? 's' : ''}`,
+
+      description:
+        'Review eligible RDS storage configurations for GP3 migration.',
+
+      monthlySaving:
+        rds.gp2Storage *
+        8,
+
+      action:
+        'RDS → Database → Modify → Storage type: gp3.'
+
+    });
+
+  }
+
+
+  if (
+    rds.multiAZ > 1
+  ) {
+
+    recommendations.push({
+
+      category:
+        'Database',
+
+      priority:
+        'MEDIUM',
+
+      icon:
+        '🔁',
+
+      title:
+        `Review Multi-AZ on ${rds.multiAZ} RDS Instances`,
+
+      description:
+        'Review Multi-AZ requirements for non-production databases.',
+
+      monthlySaving:
+        rds.multiAZ *
+        30,
+
+      action:
+        'Review availability requirements before changing Multi-AZ configuration.'
+
+    });
+
+  }
+
+
+  const rdsService =
+    svc('Relational Database') ||
+    svc('RDS');
+
+
+  if (
+    rdsService &&
+    rdsService.cost > 80 &&
+    rds.available > 0
+  ) {
+
+    recommendations.push({
+
+      category:
+        'Database',
+
+      priority:
+        'HIGH',
+
+      icon:
+        '💰',
+
+      title:
+        'Review RDS Reserved Instances',
+
+      description:
+        'Evaluate steady production RDS workloads for Reserved Instance opportunities.',
+
+      monthlySaving:
+        rdsService.cost *
+        0.38,
+
+      action:
+        'RDS → Reserved instances → review purchase recommendations.'
+
+    });
+
+  }
+
+
+  /*
+   * Sort
+   */
+
+  const priorityOrder = {
+
+    HIGH: 0,
+
+    MEDIUM: 1,
+
+    LOW: 2
+
+  };
+
+
+  recommendations.sort(
+    (a, b) =>
+
+      priorityOrder[a.priority] -
+      priorityOrder[b.priority] ||
+
+      b.monthlySaving -
+      a.monthlySaving
+  );
+
+
+  return recommendations;
+
+}
+
+
+/*
+ * ============================================================
+ * FETCH ALL DATA
+ * ============================================================
+ */
+
+async function fetchAllData(
+  region,
+  year,
+  month
+) {
+
+  const {
+    ce,
+    ec2,
+    s3,
+    sts,
+    elb,
+    rds
+  } =
+    getClients(region);
+
+
+  const now =
+    new Date();
+
+
+  const billingYear =
+    year ||
+    now.getFullYear();
+
+
+  const billingMonth =
+    month !== undefined &&
+    month !== null
+
+      ? month
+
+      : now.getMonth();
+
+
+  console.log(
+    `Fetching — region:${region} year:${billingYear} month:${billingMonth}`
+  );
+
+
+  const selected =
+    monthRange(
+      billingYear,
+      billingMonth
+    );
+
+
+  const previous =
+    billingMonth === 0
+
+      ? monthRange(
+          billingYear - 1,
+          11
+        )
+
+      : monthRange(
+          billingYear,
+          billingMonth - 1
+        );
+
+
+  previous.end =
+    fmtDate(
+      new Date(
+        billingYear,
+        billingMonth,
+        1
+      )
+    );
+
+
+  const previous2 =
+    billingMonth <= 1
+
+      ? monthRange(
+          billingYear - 1,
+          billingMonth === 0
+            ? 10
+            : 11
+        )
+
+      : monthRange(
+          billingYear,
+          billingMonth - 2
+        );
+
+
+  previous2.end =
+    fmtDate(
+      new Date(
+        billingYear,
+        billingMonth - 1,
+        1
+      )
+    );
+
+
+  const [
+    identity,
+    selectedMap,
+    previousMap,
+    previous2Map,
+    monthlyData,
+    ec2Stats,
+    elasticIPs,
+    volumes,
+    vpcStats,
+    albStats,
+    s3Buckets,
+    rdsStats
+  ] =
+    await Promise.all([
+
+      sts
+        .send(
+          new GetCallerIdentityCommand({})
+        )
+        .catch(
+          () => ({
+            Account:
+              'N/A'
+          })
+        ),
+
+      ceCostByService(
+        ce,
+        selected.start,
+        selected.end
+      ),
+
+      ceCostByService(
+        ce,
+        previous.start,
+        previous.end
+      ),
+
+      ceCostByService(
+        ce,
+        previous2.start,
+        previous2.end
+      ),
+
+      ceMonthlyTotals(
+        ce,
+        billingYear
+      ),
+
+      fetchEC2Stats(
+        ec2
+      ),
+
+      fetchElasticIPs(
+        ec2
+      ),
+
+      fetchVolumes(
+        ec2
+      ),
+
+      fetchVPCStats(
+        ec2
+      ),
+
+      fetchALBStats(
+        elb
+      ),
+
+      fetchS3Count(
+        s3
+      ),
+
+      fetchRDSStats(
+        rds
+      )
+
+    ]);
+
+
+  const services =
+    toList(
+      selectedMap
+    );
+
+
+  const lastMonthServices =
+    toList(
+      previousMap
+    );
+
+
+  const twoMonthsAgoServices =
+    toList(
+      previous2Map
+    );
+
+
+  const currentMonthTotal =
+    parseFloat(
+      services
+        .reduce(
+          (
+            sum,
+            item
+          ) =>
+            sum + item.cost,
+          0
+        )
+        .toFixed(2)
+    );
+
+
+  /*
+   * ============================================================
+   * CLOUDWATCH IDLE
+   * ============================================================
+   */
+
+  const idleResources =
+    await fetchIdleResources(
+
+      region,
+
+      ec2Stats.instances ||
+        [],
+
+      rdsStats.instances ||
+        []
+
+    );
+
+
+  /*
+   * ============================================================
+   * FINOPS
+   * ============================================================
+   */
+
+  const finops =
+    await analyzeEBS(
+      ec2
+    );
+
+
+  /*
+   * EBS recommendations include:
+   *
+   * - GP2 -> GP3
+   * - Unattached EBS
+   * - AMI >90 days
+   * - Snapshot >90 days
+   * - Orphaned snapshots
+   */
+
+  const finopsRecommendations =
+    buildEBSRecommendations(
+      finops
+    );
+
+
+  const MONTH_NAMES = [
+
+    'January',
+    'February',
+    'March',
+    'April',
+    'May',
+    'June',
+    'July',
+    'August',
+    'September',
+    'October',
+    'November',
+    'December'
+
+  ];
+
+
+  const billingPeriod =
+    selected.isCurrentMonth
+
+      ? `${MONTH_NAMES[billingMonth]} 1 – ${now.getDate()} (MTD)`
+
+      : `${MONTH_NAMES[billingMonth]} ${billingYear} (Full Month)`;
+
+
+  const infraStats = {
+
+    ec2:
+      ec2Stats,
+
+    elasticIPs,
+
+    volumes,
+
+    s3Buckets,
+
+    rds:
+      rdsStats,
+
+    vpcs:
+      vpcStats.vpcs,
+
+    subnets:
+      vpcStats.subnets,
+
+    natGateways:
+      vpcStats.natGateways,
+
+    internetGateways:
+      vpcStats.internetGateways,
+
+    securityGroups:
+      vpcStats.securityGroups,
+
+    keyPairs:
+      vpcStats.keyPairs,
+
+    alb:
+      albStats
+
+  };
+
+
+  const data = {
+
+    accountId:
+      identity.Account,
+
+    billingPeriod,
+
+    region,
+
+    billingYear,
+
+    billingMonth,
+
+    isCurrentMonth:
+      selected.isCurrentMonth,
+
+    currentMonthTotal,
+
+    dateRange: {
+
+      start:
+        selected.displayStart,
+
+      end:
+        selected.displayEnd
+
+    },
+
+    prevMonthRange: {
+
+      start:
+        previous.start,
+
+      end:
+        previous.end
+
+    },
+
+    prev2MonthRange: {
+
+      start:
+        previous2.start,
+
+      end:
+        previous2.end
+
+    },
+
+    services,
+
+    lastMonthServices,
+
+    twoMonthsAgoServices,
+
+    monthlyData,
+
+    infraStats,
+
+
+    /*
+     * CloudWatch idle resources
+     */
+    idleResources,
+
+
+    /*
+     * ========================================================
+     * FINOPS OPTIMIZATION
+     * ========================================================
+     *
+     * Keep EBS separately.
+     *
+     * Also expose AMI and Snapshot sections
+     * directly so the dashboard can consume
+     * them easily.
+     */
+
+    optimization: {
+
+      ebs:
+        finops,
+
+      ami:
+        finops.ami || {
+
+          total: 0,
+
+          olderThan90Days: 0,
+
+          candidates: []
+
+        },
+
+      snapshots:
+        finops.snapshots || {
+
+          total: 0,
+
+          olderThan90Days: 0,
+
+          orphaned: 0,
+
+          oldOrphaned: 0,
+
+          candidates: [],
+
+          orphanedSnapshots: [],
+
+          oldOrphanedSnapshots: [],
+
+          olderThan90DaysEstimatedMonthlyCost: 0,
+
+          orphanedEstimatedMonthlyCost: 0,
+
+          cleanupEstimatedMonthlyCost: 0
+
+        }
+
+    },
+
+
+    fetchedAt:
+      new Date().toISOString()
+
+  };
+
+
+  /*
+   * ============================================================
+   * RECOMMENDATIONS
+   * ============================================================
+   */
+
+  const normalRecommendations =
+    buildRecommendations(
+      data
+    );
+
+
+  /*
+   * Merge:
+   *
+   * Existing recommendations
+   * +
+   * EBS
+   * +
+   * AMI
+   * +
+   * Snapshot
+   */
+
+  data.recommendations = [
+
+    ...normalRecommendations,
+
+    ...finopsRecommendations
+
+  ];
+
+
+  /*
+   * Sort final recommendations
+   */
+
+  const priorityOrder = {
+
+    HIGH: 0,
+
+    MEDIUM: 1,
+
+    LOW: 2
+
+  };
+
+
+  data.recommendations.sort(
+    (a, b) =>
+
+      priorityOrder[a.priority] -
+      priorityOrder[b.priority] ||
+
+      (
+        b.monthlySaving || 0
+      ) -
+      (
+        a.monthlySaving || 0
+      )
+  );
+
+
+  return data;
+
+}
+
+
+/*
+ * ============================================================
+ * CACHE
+ * ============================================================
+ */
+
+const cache = {};
+
+const TTL =
+  15 * 60 * 1000;
+
+
+async function getCached(
+  region,
+  year,
+  month
+) {
+
+  const key =
+    `${region}_${year}_${month}`;
+
+
+  if (
+    cache[key] &&
+    Date.now() -
+      cache[key].ts <
+      TTL
+  ) {
+
+    return cache[key].data;
+
+  }
+
+
+  const data =
+    await fetchAllData(
+      region,
+      year,
+      month
+    );
+
+
+  cache[key] = {
+
+    data,
+
+    ts:
+      Date.now()
+
+  };
+
+
+  return data;
+
+}
+
+
+/*
+ * ============================================================
+ * BILLING API
+ * ============================================================
+ */
+
+app.get(
+  '/api/billing',
+  async (
+    req,
+    res
+  ) => {
+
+    const region =
+      req.query.region ||
+      process.env.AWS_REGION ||
+      'us-east-1';
+
+
+    const year =
+      parseInt(
+        req.query.year
+      ) ||
+      new Date()
+        .getFullYear();
+
+
+    const month =
+      req.query.month !== undefined
+
+        ? parseInt(
+            req.query.month
+          )
+
+        : new Date()
+            .getMonth();
+
+
+    try {
+
+      const data =
+        await getCached(
+          region,
+          year,
+          month
+        );
+
+
+      res.json(
+        data
+      );
+
+    } catch (error) {
+
+      console.error(
+        error
+      );
+
+
+      res.status(
+        500
+      ).json({
+
+        error:
+          error.message
+
+      });
+
+    }
+
+  }
+);
+
+
+/*
+ * ============================================================
+ * REFRESH API
+ * ============================================================
+ */
+
+app.get(
+  '/api/refresh',
+  async (
+    req,
+    res
+  ) => {
+
+    const region =
+      req.query.region ||
+      'us-east-1';
+
+
+    const year =
+      parseInt(
+        req.query.year
+      ) ||
+      new Date()
+        .getFullYear();
+
+
+    const month =
+      req.query.month !== undefined
+
+        ? parseInt(
+            req.query.month
+          )
+
+        : new Date()
+            .getMonth();
+
+
+    const key =
+      `${region}_${year}_${month}`;
+
+
+    delete cache[key];
+
+
+    try {
+
+      const data =
+        await getCached(
+          region,
+          year,
+          month
+        );
+
+
+      res.json(
+        data
+      );
+
+    } catch (error) {
+
+      console.error(
+        error
+      );
+
+
+      res.status(
+        500
+      ).json({
+
+        error:
+          error.message
+
+      });
+
+    }
+
+  }
+);
+
+
+/*
+ * ============================================================
+ * DAILY SERVICE COST API
+ * ============================================================
+ */
+
+app.get(
+  '/api/service-daily',
+  async (
+    req,
+    res
+  ) => {
+
+    const region =
+      req.query.region ||
+      'us-east-1';
+
+
+    const year =
+      parseInt(
+        req.query.year
+      ) ||
+      new Date()
+        .getFullYear();
+
+
+    const month =
+      req.query.month !== undefined
+
+        ? parseInt(
+            req.query.month
+          )
+
+        : new Date()
+            .getMonth();
+
+
+    const service =
+      req.query.service ||
+      '';
+
+
+    if (
+      !service
+    ) {
+
+      return res
+        .status(400)
+        .json({
+
+          error:
+            'service param required'
+
+        });
+
+    }
+
+
+    const {
+      ce
+    } =
+      getClients(
+        region
+      );
+
+
+    const now =
+      new Date();
+
+
+    const start =
+      new Date(
+        year,
+        month,
+        1
+      );
+
+
+    const isCurrentMonth =
+      year ===
+        now.getFullYear() &&
+
+      month ===
+        now.getMonth();
+
+
+    const end =
+      isCurrentMonth
+
+        ? new Date(
+            year,
+            month,
+            now.getDate() + 1
+          )
+
+        : new Date(
+            year,
+            month + 1,
+            1
+          );
+
+
+    const formatDate =
+      date =>
+        date
+          .toISOString()
+          .split('T')[0];
+
+
+    try {
+
+      const response =
+        await ce.send(
+          new GetCostAndUsageCommand({
+
+            TimePeriod: {
+
+              Start:
+                formatDate(
+                  start
+                ),
+
+              End:
+                formatDate(
+                  end
+                )
+
+            },
+
+            Granularity:
+              'DAILY',
+
+            Metrics: [
+              'UnblendedCost'
+            ],
+
+            Filter: {
+
+              Dimensions: {
+
+                Key:
+                  'SERVICE',
+
+                Values: [
+                  service
+                ]
+
+              }
+
+            }
+
+          })
+        );
+
+
+      const days =
+        (
+          response.ResultsByTime ||
+          []
+        ).map(
+          result => ({
+
+            date:
+              result
+                .TimePeriod
+                .Start,
+
+            cost:
+              parseFloat(
+                parseFloat(
+                  result.Total
+                    .UnblendedCost
+                    .Amount
+                ).toFixed(4)
+              )
+
+          })
+        );
+
+
+      res.json({
+
+        service,
+
+        year,
+
+        month,
+
+        days
+
+      });
+
+
+    } catch (error) {
+
+      console.error(
+        'daily cost error:',
+        error.message
+      );
+
+
+      res
+        .status(500)
+        .json({
+
+          error:
+            error.message
+
+        });
+
+    }
+
+  }
+);
+
+
+/*
+ * ============================================================
+ * START SERVER
+ * ============================================================
+ */
+
+app.listen(
+  PORT,
+  HOST,
+  () => {
+
+    console.log(
+      `\n✅ EagleEye — AWS Billing Intelligence → http://${HOST}:${PORT}`
+    );
+
+    console.log(
+      '   Auth: IAM Role (EC2 Instance Metadata)'
+    );
+
+    console.log(
+      '   FinOps: EBS + AMI + Snapshot optimization enabled'
+    );
+
+  }
+);
+```
+
