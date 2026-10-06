@@ -69,11 +69,6 @@ const {
   CloudTrailClient,
   DescribeTrailsCommand
 } = require('@aws-sdk/client-cloudtrail');
-const {
-  LexRuntimeV2Client,
-  RecognizeTextCommand
-} = require("@aws-sdk/client-lex-runtime-v2");
-
 
 
 /*
@@ -5970,125 +5965,6 @@ app.get(
  *     v
  * Existing EagleEye FinOps logic
  */
-
-
-/*
- * ============================================================
- * LEX CHAT API
- * ============================================================
- *
- * Browser
- *    |
- *    | Cognito-authenticated request
- *    v
- * /api/chat
- *    |
- *    v
- * Lex Runtime V2
- *    |
- *    v
- * EagleEyeAssistant
- */
-
-app.post(
-  '/api/chat',
-  async (req, res) => {
-
-    try {
-
-      const text =
-        String(req.body?.message || '').trim();
-
-      if (!text) {
-        return res
-          .status(400)
-          .json({
-            error: 'Message is required'
-          });
-      }
-
-      const sessionId =
-        String(
-          req.body?.sessionId ||
-          `eagleeye-${Date.now()}`
-        );
-
-      const lexRegion =
-        process.env.LEX_REGION ||
-        'us-east-1';
-
-      const botId =
-        process.env.LEX_BOT_ID;
-
-      const botAliasId =
-        process.env.LEX_BOT_ALIAS_ID;
-
-      if (!botId || !botAliasId) {
-        console.error(
-          'Lex configuration missing',
-          {
-            hasBotId: !!botId,
-            hasBotAliasId: !!botAliasId
-          }
-        );
-
-        return res
-          .status(500)
-          .json({
-            error: 'Lex configuration is missing'
-          });
-      }
-
-      const lexClient =
-        new LexRuntimeV2Client({
-          region: lexRegion
-        });
-
-      const command =
-        new RecognizeTextCommand({
-          botId,
-          botAliasId,
-          localeId: 'en_US',
-          sessionId,
-          text
-        });
-
-      const response =
-        await lexClient.send(command);
-
-      const messages =
-        (response.messages || [])
-          .map(message => message.content)
-          .filter(Boolean);
-
-      return res.json({
-        sessionId,
-        intent:
-          response.sessionState?.intent?.name ||
-          null,
-        state:
-          response.sessionState?.intent?.state ||
-          null,
-        messages
-      });
-
-    } catch (error) {
-
-      console.error(
-        'Lex chat error:',
-        error
-      );
-
-      return res
-        .status(500)
-        .json({
-          error: 'Unable to process chat request'
-        });
-
-    }
-
-  }
-);
 
 app.post(
   '/api/lex',
