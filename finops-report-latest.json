@@ -1,0 +1,438 @@
+{
+  "reportVersion": "1.0",
+  "generatedAt": "2026-10-07T07:27:00.208Z",
+  "source": "EagleEye",
+  "region": "us-east-1",
+  "data": {
+    "accountId": "781415762881",
+    "billingPeriod": "October 1 – 7 (MTD)",
+    "region": "us-east-1",
+    "billingYear": 2026,
+    "billingMonth": 9,
+    "isCurrentMonth": true,
+    "currentMonthTotal": 0,
+    "billingSummary": {
+      "selectedRegion": "us-east-1",
+      "regionalCost": 0,
+      "globalCost": 0,
+      "totalCost": 0
+    },
+    "regionalServices": [],
+    "globalServices": [],
+    "lastMonthRegionalServices": [],
+    "lastMonthGlobalServices": [],
+    "twoMonthsAgoRegionalServices": [],
+    "twoMonthsAgoGlobalServices": [],
+    "dateRange": {
+      "start": "2026-10-01",
+      "end": "2026-10-07"
+    },
+    "prevMonthRange": {
+      "start": "2026-09-01",
+      "end": "2026-10-01"
+    },
+    "prev2MonthRange": {
+      "start": "2026-08-01",
+      "end": "2026-09-01"
+    },
+    "services": [],
+    "lastMonthServices": [],
+    "twoMonthsAgoServices": [],
+    "monthlyData": [
+      {
+        "month": "Jan",
+        "regionalCost": 0,
+        "globalCost": 0,
+        "amount": 0
+      },
+      {
+        "month": "Feb",
+        "regionalCost": 0,
+        "globalCost": 0,
+        "amount": 0
+      },
+      {
+        "month": "Mar",
+        "regionalCost": 0,
+        "globalCost": 0,
+        "amount": 0
+      },
+      {
+        "month": "Apr",
+        "regionalCost": 0,
+        "globalCost": 0,
+        "amount": 0
+      },
+      {
+        "month": "May",
+        "regionalCost": 0,
+        "globalCost": 0,
+        "amount": 0
+      },
+      {
+        "month": "Jun",
+        "regionalCost": 0,
+        "globalCost": 0,
+        "amount": 0
+      },
+      {
+        "month": "Jul",
+        "regionalCost": 0,
+        "globalCost": 0,
+        "amount": 0
+      },
+      {
+        "month": "Aug",
+        "regionalCost": 0,
+        "globalCost": 0,
+        "amount": 0
+      },
+      {
+        "month": "Sep",
+        "regionalCost": 0,
+        "globalCost": 0,
+        "amount": 0
+      },
+      {
+        "month": "Oct",
+        "regionalCost": 0,
+        "globalCost": 0,
+        "amount": 0
+      }
+    ],
+    "infraStats": {
+      "ec2": {
+        "total": 1,
+        "running": 1,
+        "stopped": 0,
+        "types": [
+          "t3.micro"
+        ],
+        "instances": [
+          {
+            "instanceId": "i-05669faf408daf49e",
+            "instanceType": "t3.micro",
+            "state": "running",
+            "tags": {
+              "Name": "AWS Cost dahboard"
+            }
+          }
+        ]
+      },
+      "elasticIPs": {
+        "total": 0,
+        "unused": 0
+      },
+      "volumes": {
+        "total": 1,
+        "gp2": 0,
+        "gp3": 1,
+        "unused": 0,
+        "gp2Gb": 0
+      },
+      "s3Buckets": 2,
+      "rds": {
+        "total": 0,
+        "available": 0,
+        "stopped": 0,
+        "engines": {},
+        "multiAZ": 0,
+        "nonMultiAZ": 0,
+        "gp2Storage": 0,
+        "stoppedIds": [],
+        "instances": []
+      },
+      "vpcs": 1,
+      "subnets": {
+        "total": 6,
+        "public": 6,
+        "private": 0
+      },
+      "natGateways": 0,
+      "internetGateways": 1,
+      "securityGroups": 3,
+      "keyPairs": 2,
+      "alb": {
+        "total": 0,
+        "public": 0,
+        "private": 0
+      }
+    },
+    "idleResources": {
+      "ec2": [
+        {
+          "instanceId": "i-05669faf408daf49e",
+          "instanceType": "t3.micro",
+          "state": "running",
+          "tags": {
+            "Name": "AWS Cost dahboard"
+          },
+          "avgCpu": 0.34,
+          "maxCpu": 6.93,
+          "avgNetworkIn": 158213.93,
+          "avgNetworkOut": 9330.23,
+          "avgDiskReadOps": 0,
+          "avgDiskWriteOps": 0,
+          "evaluationDays": 30
+        }
+      ],
+      "rds": []
+    },
+    "optimization": {
+      "ebs": {
+        "total": 1,
+        "gp2": 0,
+        "gp3": 1,
+        "unattached": 0,
+        "gp2ToGp3Candidates": [],
+        "unattachedVolumes": [],
+        "estimatedMonthlySavings": 0,
+        "gp2ToGp3EstimatedSavings": 0,
+        "unattachedEstimatedCost": 0,
+        "ami": {
+          "total": 0,
+          "olderThan90Days": 0,
+          "candidates": [],
+          "ageThresholdDays": 90
+        },
+        "snapshots": {
+          "total": 0,
+          "olderThan90Days": 0,
+          "orphaned": 0,
+          "oldOrphaned": 0,
+          "olderThan90DaysEstimatedMonthlyCost": 0,
+          "orphanedEstimatedMonthlyCost": 0,
+          "cleanupEstimatedMonthlyCost": 0,
+          "ageThresholdDays": 90,
+          "candidates": [],
+          "orphanedSnapshots": [],
+          "oldOrphanedSnapshots": []
+        }
+      },
+      "ami": {
+        "total": 0,
+        "olderThan90Days": 0,
+        "candidates": [],
+        "ageThresholdDays": 90
+      },
+      "snapshots": {
+        "total": 0,
+        "olderThan90Days": 0,
+        "orphaned": 0,
+        "oldOrphaned": 0,
+        "olderThan90DaysEstimatedMonthlyCost": 0,
+        "orphanedEstimatedMonthlyCost": 0,
+        "cleanupEstimatedMonthlyCost": 0,
+        "ageThresholdDays": 90,
+        "candidates": [],
+        "orphanedSnapshots": [],
+        "oldOrphanedSnapshots": []
+      },
+      "s3": {
+        "total": 2,
+        "withoutLifecycle": 1,
+        "versioned": 0,
+        "buckets": [
+          {
+            "bucket": "eagleeye-finops-data-781415762881",
+            "region": "us-east-1",
+            "lifecycleConfigured": false,
+            "versioning": "Disabled"
+          },
+          {
+            "bucket": "nexila-crm-backup-781415762881-ap-south-2-an",
+            "region": "ap-south-2",
+            "lifecycleConfigured": true,
+            "versioning": "Disabled"
+          }
+        ]
+      },
+      "cloudwatchLogs": {
+        "total": 4,
+        "withoutRetention": 3,
+        "configured": 1,
+        "groupsWithoutRetention": [
+          {
+            "logGroupName": "/aws/lambda/eagleeye-lex-handler",
+            "storedBytes": 0
+          },
+          {
+            "logGroupName": "/aws/lex/JU0GYKDHGT",
+            "storedBytes": 0
+          },
+          {
+            "logGroupName": "/aws/lex/LIRKMZ02MO",
+            "storedBytes": 0
+          }
+        ]
+      },
+      "cloudTrail": {
+        "total": 0,
+        "duplicateCount": 0,
+        "duplicateGroups": [],
+        "trails": []
+      },
+      "savingsPlans": {
+        "available": false,
+        "count": 0,
+        "estimatedMonthlySavings": 0,
+        "recommendedCommitment": null,
+        "recommendations": []
+      },
+      "reservedInstances": {
+        "available": false,
+        "count": 0,
+        "estimatedMonthlySavings": 0,
+        "recommendations": []
+      }
+    },
+    "fetchedAt": "2026-10-07T07:26:59.145Z",
+    "recommendations": [
+      {
+        "category": "Compute",
+        "priority": "HIGH",
+        "icon": "💤",
+        "title": "Review 1 Idle EC2 Instance",
+        "description": "1 running EC2 instance has shown consistently low utilization over the last 30 days based on CloudWatch CPU, network and disk metrics.",
+        "monthlySaving": 0,
+        "action": "Review the listed instances with the owner. Stop or terminate only after confirming they are not required.",
+        "resources": [
+          {
+            "instanceId": "i-05669faf408daf49e",
+            "instanceType": "t3.micro",
+            "state": "running",
+            "tags": {
+              "Name": "AWS Cost dahboard"
+            },
+            "avgCpu": 0.34,
+            "maxCpu": 6.93,
+            "avgNetworkIn": 158213.93,
+            "avgNetworkOut": 9330.23,
+            "avgDiskReadOps": 0,
+            "avgDiskWriteOps": 0,
+            "evaluationDays": 30
+          }
+        ]
+      },
+      {
+        "category": "S3 Storage",
+        "priority": "MEDIUM",
+        "icon": "🗂️",
+        "title": "Audit S3 Lifecycle Across 2 Buckets",
+        "description": "Identify buckets without lifecycle rules and configure lifecycle transitions or expiration where appropriate.",
+        "monthlySaving": 0,
+        "action": "Review optimization.s3.buckets and configure lifecycle only after validating retention requirements."
+      },
+      {
+        "category": "Monitoring",
+        "priority": "MEDIUM",
+        "icon": "📊",
+        "title": "Set Retention on 3 CloudWatch Log Groups",
+        "description": "These log groups do not have an explicit retention period and may retain logs indefinitely.",
+        "monthlySaving": 0,
+        "action": "CloudWatch → Log groups → select groups without retention → set an appropriate retention period.",
+        "resources": [
+          {
+            "logGroupName": "/aws/lambda/eagleeye-lex-handler",
+            "storedBytes": 0
+          },
+          {
+            "logGroupName": "/aws/lex/JU0GYKDHGT",
+            "storedBytes": 0
+          },
+          {
+            "logGroupName": "/aws/lex/LIRKMZ02MO",
+            "storedBytes": 0
+          }
+        ]
+      }
+    ],
+    "aiRecommendations": {
+      "engine": "rule-based-finops-baseline",
+      "readyForLLM": true,
+      "estimatedMonthlySavings": 0,
+      "topRecommendations": [
+        {
+          "title": "Investigate idle EC2",
+          "reason": "1 EC2 instance(s) have low CloudWatch utilization over 30 days.",
+          "priority": "HIGH",
+          "estimatedMonthlySavings": 0
+        },
+        {
+          "title": "Configure S3 lifecycle",
+          "reason": "1 bucket(s) do not have a lifecycle configuration.",
+          "priority": "MEDIUM",
+          "estimatedMonthlySavings": 0
+        },
+        {
+          "title": "Set CloudWatch retention",
+          "reason": "3 log group(s) have no explicit retention.",
+          "priority": "MEDIUM",
+          "estimatedMonthlySavings": 0
+        }
+      ],
+      "executiveSummary": "Top priority is Investigate idle EC2. Review the listed resource evidence before applying any remediation."
+    },
+    "resourceDetails": {
+      "ec2Instances": [
+        {
+          "instanceId": "i-05669faf408daf49e",
+          "instanceName": "AWS Cost dahboard",
+          "instanceType": "t3.micro",
+          "state": "running",
+          "privateIp": "172.31.16.68",
+          "publicIp": "54.173.243.87"
+        }
+      ],
+      "rdsInstances": [],
+      "volumes": [
+        {
+          "volumeId": "vol-0eeb55bd8d48e0d8d",
+          "volumeName": "—",
+          "size": 8,
+          "type": "gp3",
+          "state": "in-use",
+          "encrypted": false,
+          "attached": true
+        }
+      ],
+      "oldAmis": [],
+      "oldSnapshots": [],
+      "buckets": [
+        {
+          "bucketName": "eagleeye-finops-data-781415762881",
+          "creationDate": "2026-10-07T05:34:14.000Z",
+          "lifecycleEnabled": false
+        },
+        {
+          "bucketName": "nexila-crm-backup-781415762881-ap-south-2-an",
+          "creationDate": "2026-09-18T05:03:48.000Z",
+          "lifecycleEnabled": true
+        }
+      ],
+      "logGroups": [
+        {
+          "logGroupName": "/aws/lambda/eagleeye-lex-handler",
+          "retentionInDays": null,
+          "storedBytes": 0
+        },
+        {
+          "logGroupName": "/aws/lex/JU0GYKDHGT",
+          "retentionInDays": null,
+          "storedBytes": 0
+        },
+        {
+          "logGroupName": "/aws/lex/LIRKMZ02MO",
+          "retentionInDays": null,
+          "storedBytes": 0
+        },
+        {
+          "logGroupName": "RDSOSMetrics",
+          "retentionInDays": 30,
+          "storedBytes": 0
+        }
+      ],
+      "trails": []
+    }
+  }
+}

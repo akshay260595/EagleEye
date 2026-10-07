@@ -27,7 +27,6 @@ const {
 
 const {
   S3Client,
-  GetObjectCommand,
   ListBucketsCommand,
   GetBucketLifecycleConfigurationCommand,
   GetBucketVersioningCommand,
@@ -1512,9 +1511,7 @@ async function getSavingsPlanRecommendation(ce) {
           TermInYears:
             'ONE_YEAR',
           PaymentOption:
-            'NO_UPFRONT',
-          LookbackPeriodInDays:
-            'THIRTY_DAYS'
+            'NO_UPFRONT'
         })
       );
 
@@ -5452,116 +5449,6 @@ const TTL =
   15 * 60 * 1000;
 
 
-
-/*
- * ============================================================
- * S3 FINOPS REPORT CACHE
- * ============================================================
- *
- * Normal dashboard loads use the scheduled FinOps report
- * stored in S3 instead of repeatedly querying AWS APIs.
- *
- * /api/refresh intentionally continues to use live AWS APIs.
- */
-
-const s3ReportCache = {};
-
-const S3_REPORT_TTL =
-  5 * 60 * 1000;
-
-
-async function getS3FinopsReport(region) {
-
-  const bucket =
-    process.env.EAGLEEYE_BUCKET ||
-    'eagleeye-finops-data-781415762881';
-
-  const key =
-    'latest/finops.json';
-
-  const cacheKey =
-    `${region}:${bucket}:${key}`;
-
-  if (
-    s3ReportCache[cacheKey] &&
-    Date.now() -
-      s3ReportCache[cacheKey].ts <
-      S3_REPORT_TTL
-  ) {
-
-    return s3ReportCache[cacheKey].data;
-
-  }
-
-  const s3 =
-    new S3Client({
-      region
-    });
-
-  const response =
-    await s3.send(
-      new GetObjectCommand({
-        Bucket:
-          bucket,
-        Key:
-          key
-      })
-    );
-
-  const body =
-    await response.Body
-      .transformToString();
-
-  const report =
-    JSON.parse(body);
-
-  if (
-    !report ||
-    !report.data
-  ) {
-
-    throw new Error(
-      'Invalid FinOps report format'
-    );
-
-  }
-
-  s3ReportCache[cacheKey] = {
-    data:
-      report.data,
-
-    ts:
-      Date.now()
-  };
-
-  return report.data;
-
-}
-
-
-/*
- * Check whether the S3 report can satisfy the
- * requested region/year/month.
- */
-function isS3ReportForSelection(
-  data,
-  region,
-  year,
-  month
-) {
-
-  return (
-    data &&
-    data.region === region &&
-    Number(data.billingYear) ===
-      Number(year) &&
-    Number(data.billingMonth) ===
-      Number(month)
-  );
-
-}
-
-
 async function getCached(
   region,
   year,
@@ -5628,6 +5515,7 @@ app.get(
       process.env.AWS_REGION ||
       'us-east-1';
 
+
     const year =
       parseInt(
         req.query.year,
@@ -5636,7 +5524,9 @@ app.get(
       new Date()
         .getFullYear();
 
+
     const month =
+
       req.query.month !== undefined
 
         ? parseInt(
@@ -5647,63 +5537,8 @@ app.get(
         : new Date()
             .getMonth();
 
+
     try {
-
-      /*
-       * ========================================================
-       * FIRST: Try scheduled S3 FinOps report
-       * ========================================================
-       */
-
-      try {
-
-        const s3Data =
-          await getS3FinopsReport(
-            region
-          );
-
-        if (
-          isS3ReportForSelection(
-            s3Data,
-            region,
-            year,
-            month
-          )
-        ) {
-
-          console.log(
-            `Billing served from S3 report: ${region} ${year}-${month + 1}`
-          );
-
-          return res.json(
-            s3Data
-          );
-
-        }
-
-        console.log(
-          `S3 report does not match requested selection: ${region} ${year}-${month + 1}`
-        );
-
-      } catch (s3Error) {
-
-        console.warn(
-          'S3 billing report unavailable:',
-          s3Error.message
-        );
-
-      }
-
-
-      /*
-       * ========================================================
-       * FALLBACK: Existing AWS API logic
-       * ========================================================
-       */
-
-      console.log(
-        `Billing falling back to AWS APIs: ${region} ${year}-${month + 1}`
-      );
 
       const data =
         await getCached(
@@ -5712,28 +5547,32 @@ app.get(
           month
         );
 
-      return res.json(
+
+      res.json(
         data
       );
 
     } catch (error) {
 
       console.error(
-        'Billing error:',
         error
       );
 
-      return res
-        .status(500)
-        .json({
-          error:
-            error.message
-        });
+
+      res.status(
+        500
+      ).json({
+
+        error:
+          error.message
+
+      });
 
     }
 
   }
 );
+
 
 /*
  * ============================================================
@@ -6066,77 +5905,53 @@ app.get(
   '/api/resource-details',
   async (req, res) => {
 
+    const region =
+      req.query.region ||
+      'us-east-1';
+
     try {
 
-      const region =
-        req.query.region ||
-        process.env.AWS_REGION ||
-        'us-east-1';
+      const clients =
+        getClients(region);
 
-      const bucket =
-        process.env.EAGLEEYE_BUCKET ||
-        'eagleeye-finops-data-781415762881';
-
-      const s3 =
-        new S3Client({
-          region
-        });
-
-      const response =
-        await s3.send(
-          new GetObjectCommand({
-            Bucket: bucket,
-            Key: 'latest/finops.json'
-          })
+      const data =
+        await getResourceDetails(
+          clients
         );
 
-      const body =
-        await response.Body.transformToString();
+      res.json({
 
-      const report =
-        JSON.parse(body);
-
-      const resourceDetails =
-        report?.data?.resourceDetails;
-
-      if (!resourceDetails) {
-
-        return res.status(404).json({
-          error:
-            'Detailed resource inventory is not available in the latest FinOps report'
-        });
-
-      }
-
-      return res.json({
-        region:
-          report.region ||
-          region,
+        region,
 
         fetchedAt:
-          report.generatedAt ||
-          report.data?.fetchedAt ||
-          null,
+          new Date().toISOString(),
 
-        ...resourceDetails
+        ...data
+
       });
 
     } catch (error) {
 
       console.error(
-        'S3 resource details error:',
+        'Resource details error:',
         error
       );
 
-      return res.status(500).json({
-        error:
-          'Unable to read resource details from S3'
-      });
+      res
+        .status(500)
+        .json({
+
+          error:
+            error.message
+
+        });
 
     }
 
   }
 );
+
+
 
 /*
  * ============================================================
@@ -6274,68 +6089,6 @@ app.post(
 
   }
 );
-
-
-/*
- * ============================================================
- * S3 FINOPS REPORT
- * ============================================================
- */
-
-app.get(
-  '/api/finops-report',
-  async (req, res) => {
-
-    try {
-
-      const region =
-        req.query.region ||
-        process.env.AWS_REGION ||
-        'us-east-1';
-
-      const bucket =
-        process.env.EAGLEEYE_BUCKET ||
-        'eagleeye-finops-data-781415762881';
-
-      const s3 =
-        new S3Client({
-          region
-        });
-
-      const command =
-        new GetObjectCommand({
-          Bucket: bucket,
-          Key: 'latest/finops.json'
-        });
-
-      const response =
-        await s3.send(command);
-
-      const body =
-        await response.Body.transformToString();
-
-      const report =
-        JSON.parse(body);
-
-      return res.json(report);
-
-    } catch (error) {
-
-      console.error(
-        'S3 FinOps report error:',
-        error
-      );
-
-      return res.status(500).json({
-        error:
-          'Unable to read FinOps report from S3'
-      });
-
-    }
-
-  }
-);
-
 
 app.post(
   '/api/lex',
@@ -6591,44 +6344,34 @@ app.post(
  * ============================================================
  */
 
-if (require.main === module) {
+app.listen(
+  PORT,
+  HOST,
+  () => {
 
-  app.listen(
-    PORT,
-    HOST,
-    () => {
-
-      console.log(
-        `\n✅ EagleEye — AWS Billing Intelligence → http://${HOST}:${PORT}`
-      );
+    console.log(
+      `\n✅ EagleEye — AWS Billing Intelligence → http://${HOST}:${PORT}`
+    );
 
 
-      console.log(
-        '   Auth: Amazon Cognito Managed Login + server-side session'
-      );
+    console.log(
+      '   Auth: Amazon Cognito Managed Login + server-side session'
+    );
 
 
-      console.log(
-        `   Cognito: ${COGNITO_USER_POOL_ID} / ${COGNITO_CLIENT_ID}`
-      );
+    console.log(
+      `   Cognito: ${COGNITO_USER_POOL_ID} / ${COGNITO_CLIENT_ID}`
+    );
 
 
-      console.log(
-        '   AWS API access: IAM Role (EC2 Instance Metadata)'
-      );
+    console.log(
+      '   AWS API access: IAM Role (EC2 Instance Metadata)'
+    );
 
 
-      console.log(
-        '   FinOps: EBS + AMI + Snapshot + S3 + CloudWatch + CloudTrail optimization enabled'
-      );
+    console.log(
+      '   FinOps: EBS + AMI + Snapshot + S3 + CloudWatch + CloudTrail optimization enabled'
+    );
 
-    }
-  );
-
-}
-
-
-module.exports = {
-  fetchAllData,
-  getClients
-};
+  }
+);

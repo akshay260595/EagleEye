@@ -10,8 +10,10 @@ const {
 } = require('@aws-sdk/client-rds');
 
 const {
+  S3Client,
   ListBucketsCommand,
-  GetBucketLifecycleConfigurationCommand
+  GetBucketLifecycleConfigurationCommand,
+  GetBucketLocationCommand
 } = require('@aws-sdk/client-s3');
 
 const {
@@ -331,12 +333,31 @@ async function getResourceDetails(clients) {
 
     try {
 
-      await s3.send(
+      // Determine the bucket's actual AWS region.
+      const locationResponse =
+        await s3.send(
+          new GetBucketLocationCommand({
+            Bucket: bucket.Name
+          })
+        );
+
+      // AWS returns an empty location for us-east-1.
+      const bucketRegion =
+        !locationResponse.LocationConstraint
+          ? 'us-east-1'
+          : locationResponse.LocationConstraint === 'EU'
+            ? 'eu-west-1'
+            : locationResponse.LocationConstraint;
+
+      // Use an S3 client in the bucket's own region.
+      const bucketS3 =
+        new S3Client({
+          region: bucketRegion
+        });
+
+      await bucketS3.send(
         new GetBucketLifecycleConfigurationCommand({
-
-          Bucket:
-            bucket.Name
-
+          Bucket: bucket.Name
         })
       );
 

@@ -1310,6 +1310,37 @@ async function loadDailyChart(svcName) {
     if (d.error) throw new Error(d.error);
 
     // Fetch detailed AWS resource inventory using
+    // the same authenticated browser session.
+    try {
+
+      const resourceResponse =
+        await fetch(
+          `/api/resource-details?region=${sel.region}`
+        );
+
+      const resourceData =
+        await resourceResponse.json();
+
+      if (!resourceData.error) {
+        d.resourceDetails = resourceData;
+      } else {
+        console.warn(
+          'Resource details unavailable:',
+          resourceData.error
+        );
+
+        d.resourceDetails = {};
+      }
+
+    } catch (resourceError) {
+
+      console.warn(
+        'Resource details request failed:',
+        resourceError
+      );
+
+      d.resourceDetails = {};
+    }
 
     // Restore canvas (innerHTML wipes it during loading spinner)
     wrap.innerHTML = '<canvas id="dailyChart"></canvas>';
@@ -2414,45 +2445,6 @@ async function load(bust=false) {
     const r   = await fetch(url);
     const d   = await r.json();
     if (d.error) throw new Error(d.error);
-
-    // Resource details are now read from the S3-backed API.
-    try {
-
-      const resourceResponse =
-        await fetch(
-          `/api/resource-details?region=${sel.region}`
-        );
-
-      const resourceData =
-        await resourceResponse.json();
-
-      if (!resourceResponse.ok || resourceData.error) {
-
-        console.warn(
-          'Resource details unavailable:',
-          resourceData.error || resourceResponse.statusText
-        );
-
-        d.resourceDetails = {};
-
-      } else {
-
-        d.resourceDetails =
-          resourceData;
-
-      }
-
-    } catch (resourceError) {
-
-      console.warn(
-        'Resource details request failed:',
-        resourceError
-      );
-
-      d.resourceDetails = {};
-
-    }
-
     clearTimeout(lt);
     document.getElementById('pl').classList.add('hidden');
     document.getElementById('errc').classList.remove('show');
